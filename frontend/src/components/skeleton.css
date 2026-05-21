@@ -1,0 +1,14 @@
+.skeleton-list {
+  display: grid;
+  gap: 12px;
+}
+.skeleton-item {
+  background: linear-gradient(90deg, #e6e6e6 8%, #f2f2f2 18%, #e6e6e6 33%);
+  background-size: 200% 100%;
+  border-radius: 8px;
+  animation: shimmer 1.2s linear infinite;
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}

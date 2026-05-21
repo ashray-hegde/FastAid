@@ -1,0 +1,37 @@
+.toast-root {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  z-index: 9999;
+}
+
+.toast {
+  min-width: 280px;
+  max-width: 360px;
+  padding: 16px 20px;
+  border-radius: 20px;
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+  cursor: pointer;
+  animation: slideInRight 0.35s ease;
+}
+
+.toast-info {
+  background: rgba(37, 99, 235, 0.95);
+}
+
+.toast-success {
+  background: rgba(16, 185, 129, 0.95);
+}
+
+.toast-error {
+  background: rgba(239, 68, 68, 0.95);
+}
+
+.toast-warning {
+  background: rgba(245, 158, 11, 0.95);
+}
