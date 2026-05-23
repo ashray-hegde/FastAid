@@ -19,12 +19,18 @@ import { ToastProvider } from "./context/ToastContext";
 import ToastContainer from "./components/ToastContainer";
 
 export default function App() {
+  if (process.env.NODE_ENV !== "production") console.log("App rerender");
   const [role, setRole] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
+    if (process.env.NODE_ENV !== "production") console.log("App useEffect: token/socket/role setup");
     const token = localStorage.getItem("token");
     const socket = getSocket();
+    if (process.env.NODE_ENV !== "production") {
+      socket.on("connect", () => console.log("[App] Socket connected", socket.id));
+      socket.on("disconnect", (reason) => console.log("[App] Socket disconnected", reason));
+    }
 
     // If no token, leave socket to manage connection; it will reconnect when token appears
     if (!token) {
@@ -57,23 +63,28 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (process.env.NODE_ENV !== "production") console.log("App useEffect: booking-update handler");
     const socket = getSocket();
     const handleBookingUpdate = (data) => {
       if (process.env.NODE_ENV !== "production") console.log("booking-update", data);
     };
 
     socket.on("booking-update", handleBookingUpdate);
+    if (process.env.NODE_ENV !== "production") console.log("[App] Registered booking-update handler");
 
     return () => {
       socket.off("booking-update", handleBookingUpdate);
+      if (process.env.NODE_ENV !== "production") console.log("[App] Cleaned up booking-update handler");
     };
   }, []);
 
   const handleLogout = () => {
+    if (process.env.NODE_ENV !== "production") console.log("App handleLogout called");
     const socket = getSocket();
     localStorage.removeItem("token");
     setRole("");
     socket.disconnect();
+    if (process.env.NODE_ENV !== "production") console.log("[App] Socket disconnected on logout");
     navigate("/login");
   };
 

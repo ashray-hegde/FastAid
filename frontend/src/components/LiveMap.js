@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import { GoogleMap, Marker, Polyline, DirectionsRenderer, useJsApiLoader } from "@react-google-maps/api";
 import getSocket from "../socket";
+// Debug: Track rerenders
+if (process.env.NODE_ENV !== "production") console.log("LiveMap rerender");
 import { decodeJwt } from "../utils/token";
 
 const defaultCenter = { lat: 19.076, lng: 72.8777 };
@@ -17,6 +19,8 @@ const bikeIcon = {
 };
 
 export default function LiveMap({ providerLocation, providerId, bookingId, customerLocation, provider, serviceName }) {
+  // Memoize socket instance
+  const socket = useMemo(() => getSocket(), []);
   const [userLocation, setUserLocation] = useState(null);
   const [liveProviderLocation, setLiveProviderLocation] = useState(providerLocation || null);
   const [animatedProviderLocation, setAnimatedProviderLocation] = useState(providerLocation || null);
@@ -79,7 +83,10 @@ export default function LiveMap({ providerLocation, providerId, bookingId, custo
   }, [providerLocation]);
 
   useEffect(() => {
+    // Debug: Log effect run
+    if (process.env.NODE_ENV !== "production") console.log("LiveMap useEffect: providerId, bookingId", { providerId, bookingId });
     const handler = (data) => {
+      if (process.env.NODE_ENV !== "production") console.log("providerLocationUpdate event", data);
       const lat = data.lat ?? data.latitude;
       const lng = data.lng ?? data.longitude;
       if (typeof lat !== "number" || typeof lng !== "number") return;
@@ -90,20 +97,22 @@ export default function LiveMap({ providerLocation, providerId, bookingId, custo
       }
     };
 
-    getSocket().on("providerLocationUpdate", handler);
+    socket.on("providerLocationUpdate", handler);
 
     const token = localStorage.getItem("token");
     if (bookingId && token) {
       const decoded = decodeJwt(token);
       if (decoded?.id) {
-        getSocket().emit("join-booking", { bookingId, userId: decoded.id, token });
+        socket.emit("join-booking", { bookingId, userId: decoded.id, token });
+        if (process.env.NODE_ENV !== "production") console.log("Emitted join-booking", { bookingId, userId: decoded.id });
       }
     }
 
     return () => {
-      getSocket().off("providerLocationUpdate", handler);
+      socket.off("providerLocationUpdate", handler);
+      if (process.env.NODE_ENV !== "production") console.log("Cleaned up providerLocationUpdate handler");
     };
-  }, [providerId, bookingId]);
+  }, [providerId, bookingId, socket]);
 
   useEffect(() => {
     if (!liveProviderLocation) return;
