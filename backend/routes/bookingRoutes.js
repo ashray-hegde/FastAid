@@ -9,6 +9,7 @@ const Service = require("../models/Service");
 const Payment = require("../models/Payment");
 
 const { verifyToken } = require("../utils/verifyToken");
+const mongoose = require("mongoose");
 
 // =====================================================
 // CREATE BOOKING
@@ -44,6 +45,104 @@ router.post(
       const tipAmount = Number(tip || 0);
       const paymentAmount = finalPrice + tipAmount;
 
+      let paymentStatus = "pending";
+      let requiresApproval = false;
+      let walletDeducted = false;
+
+      if (paymentMethod === "cod") {
+        paymentStatus = "cod";
+      } else if (paymentMethod === "wallet") {
+        // perform atomic wallet deduction and booking/payment creation using mongoose transaction
+        const session = await mongoose.startSession();
+        session.startTransaction();
+        try {
+          const User = require("../models/User");
+          const user = await User.findById(req.user.id).session(session);
+          if (!user) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json({ error: "User not found" });
+          }
+          if (Number(user.walletBalance || 0) < paymentAmount) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({ error: "Insufficient wallet balance" });
+          }
+          user.walletBalance = Number(user.walletBalance || 0) - paymentAmount;
+          await user.save({ session });
+          paymentStatus = "paid";
+          walletDeducted = true;
+
+          const bookingArr = await Booking.create([
+            {
+              userId: req.user.id,
+              providerId: null,
+              serviceId,
+              serviceName: service.name,
+              servicePrice: finalPrice,
+              quantity: 1,
+              location,
+              coordinates,
+              locationDetails,
+              paymentMethod,
+              transactionId,
+              paymentStatus,
+              status: "pending",
+              tip: tipAmount,
+              tipSuggestion: tipAmount,
+              couponCode: couponCode || undefined
+            }
+          ], { session });
+
+          const booking = bookingArr[0];
+
+          await Payment.create([
+            {
+              userId: req.user.id,
+              bookingId: booking._id,
+              amount: paymentAmount,
+              method: paymentMethod,
+              transactionId,
+              status: "paid",
+              requiresApproval: false,
+              transactionType: "booking",
+              metadata: {
+                transactionNote: req.body.transactionNote || undefined,
+                proofImage: req.body.proofImage || undefined,
+                walletDeducted
+              }
+            }
+          ], { session });
+
+          await session.commitTransaction();
+          session.endSession();
+
+          const populatedBooking = await Booking.findById(booking._id)
+            .populate("userId", "name email")
+            .populate("serviceId", "name category");
+
+          const io = req.app.get("io");
+          if (io) {
+            io.emit("booking-created", { booking: populatedBooking });
+          }
+
+          return res.status(201).json({ success: true, booking: populatedBooking });
+        } catch (txErr) {
+          try { await session.abortTransaction(); } catch (e) {}
+          session.endSession();
+          console.error(txErr);
+          return res.status(500).json({ error: txErr.message });
+        }
+      } else if (paymentMethod === "upi" || paymentMethod === "qr") {
+        paymentStatus = "paid";
+        requiresApproval = false;
+      } else if (["bank", "card", "manual"].includes(paymentMethod)) {
+        paymentStatus = "pending";
+        requiresApproval = true;
+      } else {
+        return res.status(400).json({ error: "Unsupported payment method" });
+      }
+
       const booking = await Booking.create({
         userId: req.user.id,
         providerId: null,
@@ -56,29 +155,27 @@ router.post(
         locationDetails,
         paymentMethod,
         transactionId,
-        paymentStatus: paymentMethod === "cod" ? "cod" : "paid",
+        paymentStatus,
         status: "pending",
         tip: tipAmount,
         tipSuggestion: tipAmount,
         couponCode: couponCode || undefined
       });
 
-      await Payment.create({
+      const payment = await Payment.create({
         userId: req.user.id,
         bookingId: booking._id,
         amount: paymentAmount,
         method: paymentMethod,
         transactionId,
-        status: paymentMethod === "cod" ? "pending" : "paid"
-      });
-
-      await Payment.create({
-        userId: req.user.id,
-        bookingId: booking._id,
-        amount: booking.servicePrice,
-        method: paymentMethod,
-        transactionId,
-        status: paymentMethod === "cod" ? "pending" : "paid"
+        status: paymentStatus === "paid" ? "paid" : "pending",
+        requiresApproval,
+        transactionType: "booking",
+        metadata: {
+          transactionNote: req.body.transactionNote || undefined,
+          proofImage: req.body.proofImage || undefined,
+          walletDeducted
+        }
       });
 
       const populatedBooking = await Booking.findById(booking._id)

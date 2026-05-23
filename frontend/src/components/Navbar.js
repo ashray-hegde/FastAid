@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
+import getSocket from "../socket";
+import { decodeJwt } from "../utils/token";
 
 export default function Navbar({ onLogout }) {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(null);
+  const [socketConnected, setSocketConnected] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -18,7 +22,7 @@ export default function Navbar({ onLogout }) {
 
       let decodedToken;
       try {
-        decodedToken = JSON.parse(atob(token.split(".")[1]));
+        decodedToken = decodeJwt(token);
         if (decodedToken?.role) {
           setRole(decodedToken.role);
         }
@@ -41,6 +45,17 @@ export default function Navbar({ onLogout }) {
     };
 
     fetchUser();
+
+    const socket = getSocket();
+    const handleConnect = () => setSocketConnected(true);
+    const handleDisconnect = () => setSocketConnected(false);
+    socket.on("connect", handleConnect);
+    socket.on("disconnect", handleDisconnect);
+
+    return () => {
+      socket.off("connect", handleConnect);
+      socket.off("disconnect", handleDisconnect);
+    };
   }, [onLogout]);
 
   const handleLogout = () => {
@@ -75,7 +90,8 @@ export default function Navbar({ onLogout }) {
         { label: "Users", path: "/admin/users", icon: "👥" },
         { label: "Services", path: "/admin/services", icon: "⚙️" },
         { label: "Bookings", path: "/admin/bookings", icon: "📋" },
-        { label: "Payments", path: "/admin/payments", icon: "💳" }
+        { label: "Payments", path: "/admin/payments", icon: "💳" },
+        { label: "Lockouts", path: "/admin/lockouts", icon: "🔐" }
       );
     } else if (role === "provider") {
       baseLinks.push(
@@ -97,41 +113,63 @@ export default function Navbar({ onLogout }) {
   };
 
   const navLinks = getNavLinks();
-
+  
+  // Render full navbar for all roles
   return (
     <nav className="navbar animate-slide-in-left">
       <div className="navbar-left">
         <div className="navbar-logo" onClick={() => navigate("/")} title="Go to Home">
           ⚡ FastAid
         </div>
-
-        <ul className="navbar-menu">
-          {navLinks.map((link) => (
-            <li key={link.path} className="navbar-item">
-              <a
-                href={link.path}
-                className="navbar-link"
-                onClick={(e) => {
-                  e.preventDefault();
-                  navigate(link.path);
-                }}
-              >
-                <span>{link.icon}</span>
-                <span>{link.label}</span>
-              </a>
-            </li>
+        {/* Desktop nav */}
+        <div className="navbar-links">
+          {navLinks.slice(0, 4).map((link) => (
+            <button
+              key={link.path}
+              className="tab-btn"
+              onClick={() => { setMobileOpen(false); navigate(link.path); }}
+            >
+              {link.icon} {link.label}
+            </button>
           ))}
-        </ul>
+        </div>
+
+        {/* Mobile hamburger */}
+        <button
+          className="hamburger-btn"
+          aria-label={mobileOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={mobileOpen}
+          onClick={() => setMobileOpen((s) => !s)}
+        >
+          {mobileOpen ? '✕' : '☰'}
+        </button>
       </div>
 
       <div className="navbar-right">
+        {/* Mobile menu (simple stacked) */}
+        {mobileOpen && (
+          <div className="mobile-menu">
+            {navLinks.map((l) => (
+              <button key={l.path} className="mobile-link" onClick={() => { setMobileOpen(false); navigate(l.path); }}>
+                {l.icon} {l.label}
+              </button>
+            ))}
+          </div>
+        )}
         {user ? (
           <>
             <div className="navbar-user" onClick={() => navigate('/profile')} style={{ cursor: 'pointer' }} title="View profile">
               <div className="user-avatar">{getUserInitial()}</div>
               <div className="user-info">
                 <div className="user-name">{user?.name || "User"}</div>
-                <div className="user-role">{getRoleLabel()}</div>
+                <div className="user-role">
+                  {getRoleLabel()}
+                  {role === "provider" && (
+                    <span className={`live-pill ${socketConnected ? "online" : "offline"}`} title={socketConnected ? "Live tracking active" : "Live tracking offline"}>
+                      {socketConnected ? "Live" : "Offline"}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
             <button className="navbar-logout" onClick={handleLogout}>

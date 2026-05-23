@@ -2,7 +2,7 @@ const mongoose = require("mongoose");
 const Service = require("../models/Service");
 
 // MongoDB connection string
-const MONGO_URI = "mongodb+srv://tanukumarsb_db_user:fkQs0hvbltkXXeiy@cluster0.88lwrhn.mongodb.net/";
+const MONGO_URI = "mongodb+srv://er0711629_db_user:ashu12@cluster0.xb61asg.mongodb.net/fastaid?retryWrites=true&w=majority";
 
 const services = [
   {

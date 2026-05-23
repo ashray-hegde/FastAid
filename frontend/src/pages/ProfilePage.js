@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import api from "../api";
-import ToastContainer, { showToast } from "../components/ToastContainer";
+import ToastContainer from "../components/ToastContainer";
+import { useToast } from "../context/ToastContext";
 
 export default function ProfilePage() {
+  const { addToast } = useToast();
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
@@ -22,10 +24,19 @@ export default function ProfilePage() {
     state: "",
     postalCode: ""
   });
+  const [paymentMethods, setPaymentMethods] = useState({ upiIds: [], qrCodes: [], bankAccounts: [], cardSupported: true });
+  const [walletTopupAmount, setWalletTopupAmount] = useState("");
+  const [walletTopupMethod, setWalletTopupMethod] = useState("bank");
+  const [walletTopupTransactionId, setWalletTopupTransactionId] = useState("");
+  const [walletTopupNote, setWalletTopupNote] = useState("");
+  const [walletTopupProofFile, setWalletTopupProofFile] = useState(null);
+  const [walletTopupLoading, setWalletTopupLoading] = useState(false);
+  const [showWalletTopup, setShowWalletTopup] = useState(false);
 
   useEffect(() => {
     fetchProfile();
     fetchAddresses();
+    loadPaymentMethods();
   }, []);
 
   const fetchProfile = async () => {
@@ -40,7 +51,7 @@ export default function ProfilePage() {
         profilePicture: res.data.profilePicture || ""
       });
     } catch (err) {
-      showToast("Failed to load profile", "error");
+      addToast("Failed to load profile", "error");
     } finally {
       setLoading(false);
     }
@@ -57,6 +68,54 @@ export default function ProfilePage() {
     }
   };
 
+  const loadPaymentMethods = async () => {
+    try {
+      const res = await api.get("/payments/methods");
+      setPaymentMethods(res.data || { upiIds: [], qrCodes: [], bankAccounts: [], cardSupported: true });
+    } catch (err) {
+      console.error("Failed to load payment methods");
+    }
+  };
+
+  const uploadWalletProof = async () => {
+    if (!walletTopupProofFile) return "";
+    const formData = new FormData();
+    formData.append("proof", walletTopupProofFile);
+    const res = await api.post("/payments/upload-proof", formData, {
+      headers: { "Content-Type": "multipart/form-data" }
+    });
+    return res.data?.url || "";
+  };
+
+  const handleWalletTopup = async () => {
+    if (!walletTopupAmount || Number(walletTopupAmount) <= 0) {
+      addToast("Enter a valid top-up amount", "error");
+      return;
+    }
+
+    try {
+      setWalletTopupLoading(true);
+      const proofUrl = walletTopupProofFile ? await uploadWalletProof() : "";
+      await api.post("/payments/wallet-topup", {
+        amount: walletTopupAmount,
+        method: walletTopupMethod,
+        transactionId: walletTopupTransactionId,
+        transactionNote: walletTopupNote,
+        proofUrl
+      });
+      addToast("Wallet top-up request submitted. Waiting for admin approval.", "success");
+      setWalletTopupAmount("");
+      setWalletTopupMethod("bank");
+      setWalletTopupTransactionId("");
+      setWalletTopupNote("");
+      setWalletTopupProofFile(null);
+    } catch (err) {
+      addToast(err.response?.data?.error || "Failed to submit wallet top-up", "error");
+    } finally {
+      setWalletTopupLoading(false);
+    }
+  };
+
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
   };
@@ -69,11 +128,11 @@ export default function ProfilePage() {
     try {
       setLoading(true);
       await api.put("/auth/profile", formData);
-      showToast("Profile updated successfully!", "success");
+      addToast("Profile updated successfully!", "success");
       setEditing(false);
       fetchProfile();
     } catch (err) {
-      showToast(err.response?.data?.error || "Failed to update profile", "error");
+      addToast(err.response?.data?.error || "Failed to update profile", "error");
     } finally {
       setLoading(false);
     }
@@ -84,21 +143,19 @@ export default function ProfilePage() {
       setLoading(true);
       const coordinates = { lat: 0, lng: 0 }; // Can be updated with geolocation later
       if (editingAddressId && editingAddressId !== "new") {
-        // Update existing address by id
         await api.put(`/auth/addresses/${editingAddressId}`, {
           ...addressForm,
           coordinates
         });
-        showToast("Address updated successfully!", "success");
+        addToast("Address updated successfully!", "success");
       } else {
-        // Add new address
         await api.post("/auth/addresses", {
           ...addressForm,
           coordinates
         });
-        showToast("Address added successfully!", "success");
+        addToast("Address added successfully!", "success");
       }
-      
+
       setAddressForm({
         label: "",
         street: "",
@@ -109,7 +166,7 @@ export default function ProfilePage() {
       setEditingAddressId(null);
       fetchAddresses();
     } catch (err) {
-      showToast(err.response?.data?.error || "Failed to save address", "error");
+      addToast(err.response?.data?.error || "Failed to save address", "error");
     } finally {
       setLoading(false);
     }
@@ -119,17 +176,17 @@ export default function ProfilePage() {
     try {
       setLoading(true);
       await api.delete(`/auth/addresses/${id}`);
-      showToast("Address deleted successfully!", "success");
+      addToast("Address deleted successfully!", "success");
       fetchAddresses();
     } catch (err) {
-      showToast("Failed to delete address", "error");
+      addToast("Failed to delete address", "error");
     } finally {
       setLoading(false);
     }
   };
 
   const handleEditAddress = (id) => {
-    const addr = addresses.find(a => a.id === id);
+    const addr = addresses.find((a) => a.id === id);
     setAddressForm({
       label: addr.label || "",
       street: addr.street || "",
@@ -148,7 +205,7 @@ export default function ProfilePage() {
     <div className="dashboard-container">
       <ToastContainer />
       <div className="main-content profile-page">
-        <h1 className="page-title">👤 My Profile</h1>
+        <h1 className="page-title">My Profile</h1>
 
         {/* Profile Section */}
         <div className="profile-section">
@@ -157,18 +214,17 @@ export default function ProfilePage() {
               {user?.profilePicture ? (
                 <img src={user.profilePicture} alt="Profile" />
               ) : (
-                <div className="avatar-placeholder">👤</div>
+                <div className="avatar-placeholder">Profile</div>
               )}
             </div>
             <div className="profile-info">
               <h2>{user?.fullName || user?.name}</h2>
-              <p className="profile-role">{user?.role === "user" ? "👤 Customer" : "🔧 Provider"}</p>
+              <p className="profile-role">
+                {user?.role === "user" ? "Customer" : "Provider"}
+              </p>
               <p className="profile-email">{user?.email}</p>
             </div>
-            <button
-              className="btn btn-primary"
-              onClick={() => setEditing(!editing)}
-            >
+            <button className="btn btn-primary" onClick={() => setEditing(!editing)}>
               {editing ? "Cancel" : "Edit Profile"}
             </button>
           </div>
@@ -176,7 +232,7 @@ export default function ProfilePage() {
           {editing && (
             <div className="profile-edit-form">
               <h3>Edit Profile Information</h3>
-              
+
               <div className="form-group">
                 <label className="form-label">Full Name</label>
                 <input
@@ -200,7 +256,7 @@ export default function ProfilePage() {
                     min="18"
                   />
                 </div>
-                
+
                 <div className="form-group">
                   <label className="form-label">Mobile Number</label>
                   <input
@@ -236,11 +292,7 @@ export default function ProfilePage() {
                 />
               </div>
 
-              <button
-                className="btn btn-primary"
-                onClick={handleSaveProfile}
-                disabled={loading}
-              >
+              <button className="btn btn-primary" onClick={handleSaveProfile} disabled={loading}>
                 {loading ? "Saving..." : "Save Changes"}
               </button>
             </div>
@@ -250,51 +302,188 @@ export default function ProfilePage() {
             <h3>Account Details</h3>
             <div className="details-grid">
               <div className="detail-item">
-                <span className="detail-label">📧 Email</span>
+                <span className="detail-label">Email</span>
                 <span className="detail-value">{user?.email}</span>
               </div>
               <div className="detail-item">
-                <span className="detail-label">📞 Mobile</span>
+                <span className="detail-label">Mobile</span>
                 <span className="detail-value">{user?.mobileNumber || "Not set"}</span>
               </div>
               <div className="detail-item">
-                <span className="detail-label">📱 Secondary Mobile</span>
+                <span className="detail-label">Secondary Mobile</span>
                 <span className="detail-value">{user?.secondaryMobileNumber || "Not set"}</span>
               </div>
               <div className="detail-item">
-                <span className="detail-label">🎂 Age</span>
+                <span className="detail-label">Age</span>
                 <span className="detail-value">{user?.age || "Not set"}</span>
               </div>
               <div className="detail-item">
-                <span className="detail-label">💰 Wallet Balance</span>
+                <span className="detail-label">Wallet Balance</span>
                 <span className="detail-value">₹{user?.walletBalance || 0}</span>
               </div>
               {user?.role === "provider" && (
                 <>
                   <div className="detail-item">
-                    <span className="detail-label">⭐ Rating</span>
+                    <span className="detail-label">Rating</span>
                     <span className="detail-value">{user?.rating || 4.5}</span>
                   </div>
                   <div className="detail-item">
-                    <span className="detail-label">✅ Completed Bookings</span>
+                    <span className="detail-label">Completed Bookings</span>
                     <span className="detail-value">{user?.completedBookings || 0}</span>
                   </div>
                 </>
               )}
             </div>
           </div>
+
+          {user?.role === "user" && (
+            <div className="wallet-topup-card">
+              <div className="wallet-topup-header">
+                <div>
+                  <h3>Wallet Top-up</h3>
+                  <p>Top up your wallet to book faster. Open the form, enter payment details, and attach proof for review.</p>
+                </div>
+                <button
+                  className="btn btn-primary btn-small"
+                  onClick={() => setShowWalletTopup((prev) => !prev)}
+                >
+                  {showWalletTopup ? "Hide top-up" : "Top up wallet"}
+                </button>
+              </div>
+
+              {!showWalletTopup ? (
+                <div className="wallet-topup-summary">
+                  <p>Use your preferred transfer method and request wallet credit when you need it. No form is shown until you click the button above.</p>
+                </div>
+              ) : (
+                <div className="wallet-topup-form">
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="form-label">Top-up Amount</label>
+                      <input
+                        type="number"
+                        min="1"
+                        className="form-input"
+                        placeholder="Enter amount"
+                        value={walletTopupAmount}
+                        onChange={(e) => setWalletTopupAmount(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Payment Method</label>
+                      <select
+                        value={walletTopupMethod}
+                        onChange={(e) => setWalletTopupMethod(e.target.value)}
+                        className="form-select"
+                      >
+                        {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length > 0 && <option value="upi">UPI</option>}
+                        {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length > 0 && <option value="qr">QR Code</option>}
+                        {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length > 0 && <option value="bank">Bank Transfer</option>}
+                        {paymentMethods.cardSupported && <option value="card">Credit/Debit Card</option>}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="wallet-topup-method-info">
+                    {walletTopupMethod === "upi" && (
+                      <div className="payment-source">
+                        <h4>UPI options</h4>
+                        {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length ? paymentMethods.upiIds.filter((m) => m.enabled !== false).map((upi, index) => (
+                          <p key={index}>{upi.label || "UPI"}: <strong>{upi.value}</strong></p>
+                        )) : <p>No UPI IDs are configured yet.</p>}
+                      </div>
+                    )}
+                    {walletTopupMethod === "qr" && (
+                      <div className="payment-source">
+                        <h4>Scan QR</h4>
+                        <div className="payment-qr-grid">
+                          {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length ? paymentMethods.qrCodes.filter((m) => m.enabled !== false).map((qr, index) => (
+                            <div key={index} className="payment-qr-card">
+                              <img src={`${process.env.REACT_APP_API_BASE_URL || ""}${qr.url}`} alt={qr.label} className="payment-qr-image" />
+                              <strong>{qr.label}</strong>
+                            </div>
+                          )) : <p>No QR codes are configured yet.</p>}
+                        </div>
+                      </div>
+                    )}
+                    {walletTopupMethod === "bank" && (
+                      <div className="payment-source">
+                        <h4>Bank transfer</h4>
+                        {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length ? paymentMethods.bankAccounts.filter((m) => m.enabled !== false).map((bank, index) => (
+                          <p key={index}>{bank.bankName}: <strong>{bank.accountName}</strong> / {bank.ifsc}</p>
+                        )) : <p>No bank details are configured yet.</p>}
+                      </div>
+                    )}
+                    {walletTopupMethod === "card" && (
+                      <div className="payment-source">
+                        <h4>Card payment</h4>
+                        <p>Use your credit or debit card details when sending the transfer instruction. Attach a receipt if available.</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Transaction / Reference ID</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      value={walletTopupTransactionId}
+                      onChange={(e) => setWalletTopupTransactionId(e.target.value)}
+                      placeholder="Enter reference or auth ID"
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Notes for Admin</label>
+                    <textarea
+                      className="form-input"
+                      rows="3"
+                      value={walletTopupNote}
+                      onChange={(e) => setWalletTopupNote(e.target.value)}
+                      placeholder="Add any details for admin review"
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Upload Proof (optional)</label>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => setWalletTopupProofFile(e.target.files?.[0] || null)}
+                    />
+                    {walletTopupProofFile && (
+                      <div className="proof-preview-row">
+                        <small>{walletTopupProofFile.name}</small>
+                        <button
+                          className="btn btn-danger btn-small"
+                          onClick={() => setWalletTopupProofFile(null)}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  <button
+                    className="btn btn-secondary"
+                    onClick={handleWalletTopup}
+                    disabled={walletTopupLoading}
+                  >
+                    {walletTopupLoading ? "Submitting..." : "Request Top-up"}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Addresses Section - Only for Customers */}
         {user?.role === "user" && (
           <div className="addresses-section">
             <div className="section-header">
-              <h2>📍 Saved Addresses</h2>
+              <h2>Saved Addresses</h2>
               {editingAddressId === null && (
-                <button
-                  className="btn btn-primary btn-small"
-                  onClick={() => setEditingAddressId("new")}
-                >
+                <button className="btn btn-primary btn-small" onClick={() => setEditingAddressId("new")}>
                   + Add Address
                 </button>
               )}
@@ -303,7 +492,7 @@ export default function ProfilePage() {
             {editingAddressId !== null && (
               <div className="address-form-card">
                 <h3>{editingAddressId === "new" ? "Add New Address" : "Edit Address"}</h3>
-                
+
                 <div className="form-group">
                   <label className="form-label">Label</label>
                   <input
@@ -403,17 +592,11 @@ export default function ProfilePage() {
                       </p>
                     </div>
                     <div className="address-actions">
-                      <button
-                        className="btn btn-secondary btn-small"
-                        onClick={() => handleEditAddress(addr.id)}
-                      >
-                        ✏️ Edit
+                      <button className="btn btn-secondary btn-small" onClick={() => handleEditAddress(addr.id)}>
+                        Edit
                       </button>
-                      <button
-                        className="btn btn-danger btn-small"
-                        onClick={() => handleDeleteAddress(addr.id)}
-                      >
-                        🗑️ Delete
+                      <button className="btn btn-danger btn-small" onClick={() => handleDeleteAddress(addr.id)}>
+                        Delete
                       </button>
                     </div>
                   </div>

@@ -3,16 +3,25 @@ const mongoose = require("mongoose");
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   fullName: { type: String },
-  email: { type: String, unique: true, required: true },
-  password: { type: String, required: true },
+  email: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+  password: { type: String },
+  googleId: { type: String, unique: true, sparse: true },
+  firebaseUid: { type: String, unique: true, sparse: true },
+  authMethod: { type: String, enum: ["password", "google", "otp"], default: "password" },
+  authProviders: { type: [String], default: ["password"] },
+  loginProviders: { type: [String], default: [] },
+  profileComplete: { type: Boolean, default: false },
   age: { type: Number },
-  mobileNumber: { type: String },
+  mobileNumber: { type: String, unique: true, sparse: true, trim: true },
   secondaryMobileNumber: { type: String },
+  isMobileVerified: { type: Boolean, default: false },
+  phoneVerified: { type: Boolean, default: false },
   role: { type: String, enum: ["user", "provider", "admin"], default: "user" },
   walletBalance: { type: Number, default: 0 },
   rating: { type: Number, default: 4.5 },
   completedBookings: { type: Number, default: 0 },
   experienceYears: { type: Number, default: 0 },
+  lastLoginAt: { type: Date, default: null },
   profilePicture: String,
   location: {
     type: {
@@ -29,7 +38,6 @@ const userSchema = new mongoose.Schema({
     state: String,
     postalCode: String
   },
-  lastLocationUpdate: { type: Date, default: null },
   savedAddresses: [
     {
       id: { type: String, required: true, index: true },

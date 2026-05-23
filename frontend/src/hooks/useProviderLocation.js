@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import api from "../api";
-import socket from "../socket";
+import getSocket from "../socket";
+import { decodeJwt } from "../utils/token";
 
 export function useProviderLocation() {
   useEffect(() => {
@@ -8,13 +9,8 @@ export function useProviderLocation() {
     const token = localStorage.getItem("token");
     if (!token) return;
 
-    let decodedToken;
-    try {
-      decodedToken = JSON.parse(atob(token.split(".")[1]));
-      if (decodedToken?.role !== "provider") return;
-    } catch (err) {
-      return;
-    }
+    const decodedToken = decodeJwt(token);
+    if (!decodedToken || decodedToken.role !== "provider") return;
 
     // Request geolocation permission
     if (!navigator.geolocation) {
@@ -22,11 +18,15 @@ export function useProviderLocation() {
       return;
     }
 
+    const getCurrentBookingId = () => window.localStorage.getItem("currentBookingId");
+
     // Get initial location
     const getLocation = () => {
       navigator.geolocation.getCurrentPosition(
         (position) => {
           const { latitude, longitude } = position.coords;
+          const bookingId = getCurrentBookingId();
+
           // Store in database
           api.put("/auth/update-location", {
             latitude,
@@ -35,8 +35,9 @@ export function useProviderLocation() {
           }).catch(err => console.error("Failed to update location:", err));
 
           // Emit via socket for real-time updates
-          socket.emit("provider-location", {
+          getSocket().emit("provider-location", {
             providerId: decodedToken.id,
+            bookingId,
             latitude,
             longitude,
             token
@@ -59,15 +60,29 @@ export function useProviderLocation() {
     // Update location periodically every 30 seconds while provider is active
     const locationInterval = setInterval(getLocation, 30000);
 
+    let lastLatitude = null;
+    let lastLongitude = null;
+
     // Watch position for continuous updates (more accurate)
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
-        
-        // Emit only if position changed significantly (at least 10 meters)
-        // This is to avoid constant socket emissions for minor GPS fluctuations
-        socket.emit("provider-location", {
+        const bookingId = getCurrentBookingId();
+
+        const movedDistance = lastLatitude !== null && lastLongitude !== null
+          ? Math.sqrt(Math.pow(latitude - lastLatitude, 2) + Math.pow(longitude - lastLongitude, 2))
+          : Number.MAX_VALUE;
+
+        if (movedDistance < 0.0001) {
+          return;
+        }
+
+        lastLatitude = latitude;
+        lastLongitude = longitude;
+
+        getSocket().emit("provider-location", {
           providerId: decodedToken.id,
+          bookingId,
           latitude,
           longitude,
           token

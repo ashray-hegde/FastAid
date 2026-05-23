@@ -40,7 +40,7 @@ const bookingSchema = new mongoose.Schema({
     enum: ["pending", "paid", "failed", "cod"],
     default: "pending"
   },
-  paymentMethod: { type: String, enum: ["upi", "qr", "card", "cod", "wallet"], default: "cod" },
+  paymentMethod: { type: String, enum: ["upi", "qr", "bank", "card", "manual", "cod", "wallet"], default: "cod" },
   transactionId: { type: String, default: null },
   tip: { type: Number, default: 0 },
   tipSuggestion: { type: Number, default: 0 },

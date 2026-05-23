@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "../api";
-import socket from "../socket";
+import getSocket from "../socket";
 import { useToast } from "../context/ToastContext";
 import Skeleton from "../components/Skeleton";
 import ProviderStats from "../components/ProviderStats";
@@ -10,6 +10,7 @@ import "../styles/dashboard.css";
 
 export default function ProviderDashboard() {
   const [bookings, setBookings] = useState([]);
+  const [providerLiveLocation, setProviderLiveLocation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeSession, setActiveSession] = useState(null);
   const [history, setHistory] = useState([]);
@@ -18,9 +19,6 @@ export default function ProviderDashboard() {
   const { addToast } = useToast();
   const token = localStorage.getItem("token");
   const [processing, setProcessing] = useState({});
-
-  // Enable geolocation tracking for providers
-  useProviderLocation();
 
   const fetchBookings = async () => {
     try {
@@ -33,8 +31,10 @@ export default function ProviderDashboard() {
       );
       if (current) {
         setActiveSession(current);
+        window.localStorage.setItem("currentBookingId", current._id);
       } else {
         setActiveSession(null);
+        window.localStorage.removeItem("currentBookingId");
       }
     } catch (err) {
       console.error(err);
@@ -55,26 +55,40 @@ export default function ProviderDashboard() {
 
   useEffect(() => {
     if (token) {
-      socket.emit("register", { token });
+      getSocket().emit("register", { token });
+
+      // Fetch last known provider location on dashboard load
+      try {
+        const decoded = JSON.parse(atob(token.split(".")[1]));
+        if (decoded && decoded.role === "provider") {
+          getSocket().emit("get-provider-location", { providerId: decoded.id }, (loc) => {
+            if (loc && loc.latitude && loc.longitude) {
+              setProviderLiveLocation({ lat: loc.latitude, lng: loc.longitude, updatedAt: loc.timestamp });
+            }
+          });
+        }
+      } catch (e) {
+        // ignore decode errors
+      }
     }
 
     fetchBookings();
     fetchHistory();
 
-    socket.on("booking-created", (data) => {
+    getSocket().on("booking-created", (data) => {
       addToast(`New Booking: ${data.booking?.serviceName || "Request"}`, "success");
       fetchBookings();
       fetchHistory();
     });
 
-    socket.on("booking-update", () => {
+    getSocket().on("booking-update", () => {
       fetchBookings();
       fetchHistory();
     });
 
     return () => {
-      socket.off("booking-created");
-      socket.off("booking-update");
+      getSocket().off("booking-created");
+      getSocket().off("booking-update");
     };
   }, []);
 
@@ -105,10 +119,16 @@ export default function ProviderDashboard() {
 
       if (action.toLowerCase() === "reject") {
         setBookings((prev) => prev.filter((b) => b._id !== bookingId));
-        if (activeSession?._id === bookingId) setActiveSession(null);
+        if (activeSession?._id === bookingId) {
+          setActiveSession(null);
+          window.localStorage.removeItem("currentBookingId");
+        }
         addToast("Booking rejected successfully ✓", "success");
       } else if (action.toLowerCase() === "accept") {
         setActiveSession(booking || null);
+        if (booking?._id) {
+          window.localStorage.setItem("currentBookingId", booking._id);
+        }
         setBookings((prev) => prev.map((b) => (b._id === bookingId ? booking : b)));
         addToast("Booking accepted successfully ✓", "success");
       }
@@ -128,6 +148,7 @@ export default function ProviderDashboard() {
     try {
       await api.put(`/bookings/complete/${bookingId}`);
       addToast("Marked work as completed", "success");
+      window.localStorage.removeItem("currentBookingId");
       setBookings((prev) => prev.filter((b) => b._id !== bookingId));
       setActiveSession(null);
       fetchHistory();
@@ -152,6 +173,15 @@ export default function ProviderDashboard() {
       <div className="dashboard-content">
         <h1 className="dashboard-title">Provider Dashboard 🛠️</h1>
         <p className="dashboard-subtitle">Manage your service requests</p>
+
+        {providerLiveLocation && (
+          <div className="live-location-card">
+            <strong className="live-badge">Live Tracking Enabled</strong>
+            <div style={{ marginTop: 6 }}>
+              Last known: {new Date(providerLiveLocation.updatedAt || Date.now()).toLocaleString()} • {providerLiveLocation.lat.toFixed(5)}, {providerLiveLocation.lng.toFixed(5)}
+            </div>
+          </div>
+        )}
 
         <ProviderStats />
 

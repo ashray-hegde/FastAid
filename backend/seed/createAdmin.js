@@ -4,7 +4,7 @@ const User = require("../models/User");
 
 const MONGO_URI =
   process.env.MONGO_URI ||
-  "mongodb+srv://r09892703_db_user:pbx704ir0dmkD02h@cluster0.agyaaqf.mongodb.net/aidbridge?retryWrites=true&w=majority";
+  "mongodb+srv://er0711629_db_user:ashu12@cluster0.xb61asg.mongodb.net/fastaid?retryWrites=true&w=majority";
 
 const createAdmin = async () => {
   try {

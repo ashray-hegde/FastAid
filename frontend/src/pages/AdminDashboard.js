@@ -1,9 +1,12 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../api";
 import { useToast } from "../context/ToastContext";
 import Skeleton from "../components/Skeleton";
 import "../components/skeleton.css";
 import "../styles/dashboard.css";
+
+const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:5000";
 
 export default function AdminDashboard() {
   const [services, setServices] = useState([]);
@@ -11,6 +14,7 @@ export default function AdminDashboard() {
   const [users, setUsers] = useState([]);
   const [providers, setProviders] = useState([]);
   const [paymentConfig, setPaymentConfig] = useState({ upiIds: [], qrCodes: [], bankAccounts: [], cardSupported: true, codSupported: true });
+  const [pendingPayments, setPendingPayments] = useState([]);
   const [qrFile, setQrFile] = useState(null);
   const [qrReplaceFiles, setQrReplaceFiles] = useState({});
   const [newService, setNewService] = useState({ name: "", category: "", rating: 0 });
@@ -22,6 +26,7 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const { addToast } = useToast();
   const [processing, setProcessing] = useState({});
+  const navigate = useNavigate();
 
   const loadData = async () => {
 
@@ -161,6 +166,18 @@ export default function AdminDashboard() {
 
     }
 
+    // =====================================
+    // PENDING PAYMENTS
+    // =====================================
+
+    try {
+      const pendingPaymentsRes = await api.get("/admin-payments/payments/pending");
+      setPendingPayments(pendingPaymentsRes.data || []);
+    } catch (err) {
+      console.log("Pending payments API failed", err);
+      setPendingPayments([]);
+    }
+
   } catch (err) {
 
     console.log(err);
@@ -180,13 +197,27 @@ export default function AdminDashboard() {
 
   const handleAddService = async (e) => {
     e.preventDefault();
+    const payload = {
+      name: newService.name.trim(),
+      category: newService.category.trim()
+    };
+    if (Number.isFinite(newService.rating) && newService.rating >= 0 && newService.rating <= 5) {
+      payload.rating = Number(newService.rating);
+    }
+
+    if (!payload.name || !payload.category) {
+      addToast("Name and category are required", "error");
+      return;
+    }
+
     try {
-      await api.post("/services", newService);
+      await api.post("/services", payload);
       addToast("Service added successfully!", "success");
       setNewService({ name: "", category: "", rating: 0 });
       loadData();
     } catch (err) {
-      addToast("Failed to add service", "error");
+      console.error("Add service failed:", err);
+      addToast(err.response?.data?.error || "Failed to add service", "error");
     }
   };
 
@@ -210,11 +241,29 @@ export default function AdminDashboard() {
     if (processing[providerId]) return;
     setProcessing((p) => ({ ...p, [providerId]: true }));
     try {
-      await api.put(`/auth/verify-provider/${providerId}`, { verified: true });
+      await api.put(`/auth/verify-provider/${providerId}`, { status: "approved" });
       addToast("Provider verified successfully!", "success");
       await loadData();
     } catch (err) {
       addToast("Failed to verify provider", "error");
+    } finally {
+      setProcessing((p) => ({ ...p, [providerId]: false }));
+    }
+  };
+
+  const handleRejectProvider = async (providerId) => {
+    if (!providerId) return;
+    const reason = prompt("Please provide a reason for rejection:");
+    if (!reason) return;
+    if (processing[providerId]) return;
+
+    setProcessing((p) => ({ ...p, [providerId]: true }));
+    try {
+      await api.put(`/auth/verify-provider/${providerId}`, { status: "rejected", reason });
+      addToast("Provider verification rejected", "success");
+      await loadData();
+    } catch (err) {
+      addToast("Failed to reject provider", "error");
     } finally {
       setProcessing((p) => ({ ...p, [providerId]: false }));
     }
@@ -281,6 +330,32 @@ export default function AdminDashboard() {
     }
   };
 
+  const refreshPendingPayments = async () => {
+    try {
+      const resp = await api.get("/admin-payments/payments/pending");
+      setPendingPayments(resp.data || []);
+    } catch (err) {
+      console.error("Failed to refresh pending payments", err);
+    }
+  };
+
+  const handlePaymentReview = async (paymentId, action) => {
+    if (!paymentId) return;
+    if (processing[paymentId]) return;
+    setProcessing((p) => ({ ...p, [paymentId]: true }));
+    try {
+      await api.put(`/admin-payments/payments/review/${paymentId}`, { action, reason: action === "reject" ? "Rejected by admin" : "Approved by admin" });
+      addToast(`Payment ${action}ed successfully.`, "success");
+      await refreshPendingPayments();
+      await loadData();
+    } catch (err) {
+      console.error(err);
+      addToast("Failed to update payment status", "error");
+    } finally {
+      setProcessing((p) => ({ ...p, [paymentId]: false }));
+    }
+  };
+
   const handleReplaceQr = async (qrId, file) => {
     if (!file) return addToast("Select a replacement file first", "error");
     const fd = new FormData();
@@ -310,15 +385,7 @@ export default function AdminDashboard() {
 
   return (
     <div className="dashboard-container">
-      <header className="dashboard-header">
-        <div className="dashboard-logo">🚀 FastAid</div>
-        <button className="logout-btn" onClick={() => {
-          localStorage.removeItem("token");
-          window.location.href = "/";
-        }}>
-          Logout
-        </button>
-      </header>
+      {/* Dashboard header removed — main Navbar handles navigation and logout */}
 
       <div className="dashboard-content">
         <h1 className="dashboard-title">Admin Dashboard ⚙️</h1>
@@ -342,6 +409,12 @@ export default function AdminDashboard() {
             onClick={() => setActiveTab("payments")}
           >
             💳 Payments
+          </button>
+          <button
+            className={`tab ${activeTab === "approvals" ? "active" : ""}`}
+            onClick={() => setActiveTab("approvals")}
+          >
+            ✅ Approvals
           </button>
           <button
             className={`tab ${activeTab === "users" ? "active" : ""}`}
@@ -406,7 +479,7 @@ export default function AdminDashboard() {
               {loading ? (
                 <Skeleton count={4} height="44px" />
               ) : (
-                <table className="table">
+                <div className="table-responsive"><table className="table table-modern">
                   <thead>
                     <tr>
                       <th>Name</th>
@@ -434,7 +507,7 @@ export default function AdminDashboard() {
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </table></div>
               )}
             </div>
           </div>
@@ -445,7 +518,7 @@ export default function AdminDashboard() {
             {loading ? (
               <Skeleton count={5} height="44px" />
             ) : (
-              <table className="table">
+              <div className="table-responsive"><table className="table table-modern">
                 <thead>
                   <tr>
                     <th>Service</th>
@@ -472,7 +545,7 @@ export default function AdminDashboard() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             )}
           </div>
         )}
@@ -580,7 +653,7 @@ export default function AdminDashboard() {
                 <div className="qr-list">
                   {paymentConfig.qrCodes?.map((qr, idx) => (
                     <div key={qr._id || qr.url} className="qr-row">
-                      <img src={`http://localhost:5000${qr.url}`} alt={qr.label} style={{ width: 80, height: 80, objectFit: 'cover' }} />
+                      <img src={`${API_BASE_URL}${qr.url}`} alt={qr.label} style={{ width: 80, height: 80, objectFit: 'cover' }} />
                       <div style={{ flex: 1, marginLeft: 8 }}>
                         <div>{qr.label}</div>
                         <div style={{ marginTop: 6 }}>
@@ -603,12 +676,91 @@ export default function AdminDashboard() {
           </div>
         )}
 
+        {activeTab === "approvals" && (
+          <div className="dashboard-form fade-in">
+            <h3>Pending Payment Requests</h3>
+            <div className="table-container">
+                {loading ? (
+                <Skeleton count={3} height="44px" />
+              ) : pendingPayments.length ? (
+                <div className="table-responsive"><table className="table table-modern">
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Booking</th>
+                      <th>Amount</th>
+                      <th>Method</th>
+                      <th className="col-request">Request</th>
+                      <th className="col-proof">Proof</th>
+                      <th className="col-review">Review</th>
+                      <th className="col-action">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendingPayments.map((payment) => {
+                      const review = payment.adminReview || {};
+                      const proofUrl = payment.metadata?.proofUrl || payment.metadata?.proofImage || payment.proofUrl || "";
+                      const isImage = proofUrl && proofUrl.match(/\.(jpe?g|png|webp|gif|bmp)$/i);
+                      return (
+                        <tr key={payment._id}>
+                          <td>{payment.userId?.name || payment.userId?.email || "Unknown"}</td>
+                          <td>{payment.bookingId?.serviceName || "Top-up"}</td>
+                          <td>₹{payment.amount}</td>
+                          <td>{payment.method}</td>
+                          <td className="col-request">
+                            {payment.transactionId ? <div><strong>ID:</strong> {payment.transactionId}</div> : null}
+                            {payment.metadata?.transactionNote ? <div><strong>Note:</strong> {payment.metadata.transactionNote}</div> : null}
+                            {!payment.transactionId && !payment.metadata?.transactionNote ? "N/A" : null}
+                          </td>
+                          <td className="col-proof">
+                            {proofUrl ? (
+                              isImage ? (
+                                <a href={`${API_BASE_URL}${proofUrl}`} target="_blank" rel="noreferrer">
+                                  <img src={`${API_BASE_URL}${proofUrl}`} alt="proof" className="proof-thumb" />
+                                </a>
+                              ) : (
+                                <a href={`${API_BASE_URL}${proofUrl}`} target="_blank" rel="noreferrer">View proof</a>
+                              )
+                            ) : (
+                              "None"
+                            )}
+                          </td>
+                          <td className="col-review">
+                            <div className="review-top">
+                              <span className={`status-badge status-${review.status || 'pending'}`}>{review.status ? review.status : "Pending"}</span>
+                              {review.reviewer && (
+                                <div className="review-chip">{review.reviewer.name || review.reviewer || "Admin"}</div>
+                              )}
+                            </div>
+                            {review.reason && <div className="review-reason"><small>{review.reason}</small></div>}
+                            {review.reviewedAt && <div className="review-date"><small>{new Date(review.reviewedAt).toLocaleString()}</small></div>}
+                          </td>
+                          <td className="col-action">
+                            <button className="btn btn-success btn-small" onClick={() => handlePaymentReview(payment._id, "approve")}>Approve</button>
+                            <button className="btn btn-danger btn-small" onClick={() => handlePaymentReview(payment._id, "reject")}>Reject</button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table></div>
+              ) : (
+                <div className="empty-state">
+                  <div className="empty-state-icon">✅</div>
+                  <h3>No pending payment requests</h3>
+                  <p>New payment requests will show here for manual approval.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {activeTab === "users" && (
           <div className="table-container fade-in">
             {loading ? (
               <Skeleton count={4} height="44px" />
             ) : (
-              <table className="table">
+              <div className="table-responsive"><table className="table table-modern">
                 <thead>
                   <tr>
                     <th>Name</th>
@@ -629,7 +781,7 @@ export default function AdminDashboard() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+              </table></div>
             )}
           </div>
         )}
@@ -639,11 +791,11 @@ export default function AdminDashboard() {
             {loading ? (
               <Skeleton count={4} height="44px" />
             ) : (
-              <table className="table">
+              <div className="table-responsive"><table className="table table-modern">
                 <thead>
                   <tr>
-                    <th>User ID</th>
-                    <th>Verified</th>
+                    <th>Name</th>
+                    <th>Status</th>
                     <th>Documents</th>
                     <th>Action</th>
                   </tr>
@@ -656,37 +808,39 @@ export default function AdminDashboard() {
                       <tr key={providerId || providerName || provider._id || provider.id}>
                         <td>{providerName || "Unknown Provider"}</td>
                         <td>
-                          {provider.verified ? (
-                            <span className="status-badge status-accepted">✅ Verified</span>
-                          ) : (
-                            <span className="status-badge status-pending">❌ Not Verified</span>
-                          )}
+                          <span className={`status-badge status-${provider.verificationStatus || (provider.verified ? "accepted" : "pending")}`}>
+                            {provider.verificationStatus === "approved" ? "Approved" : provider.verificationStatus === "pending" ? "Pending" : provider.verificationStatus === "rejected" ? "Rejected" : "Unsubmitted"}
+                          </span>
                         </td>
                         <td>
                           <small>
-                            Aadhar: {provider.documents?.aadhar || "N/A"}<br/>
-                            PAN: {provider.documents?.pan || "N/A"}
+                            Aadhar: {provider.documents?.aadhar ? <a href={`${API_BASE_URL}${provider.documents.aadhar}`} target="_blank" rel="noreferrer">View</a> : "N/A"}<br/>
+                            PAN: {provider.documents?.pan ? <a href={`${API_BASE_URL}${provider.documents.pan}`} target="_blank" rel="noreferrer">View</a> : "N/A"}
                           </small>
                         </td>
                         <td>
-                          {!provider.verified ? (
-                            <button
-                              type="button"
-                              onClick={() => providerId && handleVerifyProvider(providerId)}
-                              className="btn btn-success btn-small"
-                              disabled={!providerId}
-                            >
-                              Verify
-                            </button>
-                          ) : (
-                            <span className="reviewed-tag">Already verified</span>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => providerId && handleVerifyProvider(providerId)}
+                            className="btn btn-success btn-small"
+                            disabled={!providerId || provider.verificationStatus === "approved"}
+                          >
+                            Approve
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => providerId && handleRejectProvider(providerId)}
+                            className="btn btn-danger btn-small"
+                            disabled={!providerId || provider.verificationStatus === "approved"}
+                          >
+                            Reject
+                          </button>
                         </td>
                       </tr>
                     );
                   })}
                 </tbody>
-              </table>
+              </table></div>
             )}
           </div>
         )}

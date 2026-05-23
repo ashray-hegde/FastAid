@@ -1,10 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../api";
+import AuthOtp from "../components/AuthOtp";
+import { normalizePhoneInput } from "../firebase";
 
-export default function Register({ setShowRegister }) {
-  const [step, setStep] = useState(1); // Step 1: Basic, Step 2: Details
+export default function Register() {
+  const navigate = useNavigate();
+  const [step, setStep] = useState(1);
   const [formData, setFormData] = useState({
-    name: "",
     fullName: "",
     email: "",
     password: "",
@@ -12,14 +15,24 @@ export default function Register({ setShowRegister }) {
     age: "",
     mobileNumber: "",
     secondaryMobileNumber: "",
-    // Customer address fields
     street: "",
     city: "",
     state: "",
-    postalCode: ""
+    postalCode: "",
+    otp: ""
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [otpSentMessage, setOtpSentMessage] = useState("");
+  const [otpRequested, setOtpRequested] = useState(false);
+  const [resendSeconds, setResendSeconds] = useState(0);
+  const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    if (resendSeconds <= 0) return;
+    const timer = window.setTimeout(() => setResendSeconds((count) => count - 1), 1000);
+    return () => window.clearTimeout(timer);
+  }, [resendSeconds]);
 
   const handleChange = (e) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -28,64 +41,92 @@ export default function Register({ setShowRegister }) {
   const handleNextStep = (e) => {
     e.preventDefault();
     setError("");
-    
-    if (!formData.name || !formData.fullName || !formData.email || !formData.password) {
-      setError("Please fill all basic fields");
+
+    if (!formData.fullName || !formData.email || !formData.password) {
+      setError("Please fill all basic fields.");
       return;
     }
-    
-    if (formData.password.length < 6) {
-      setError("Password must be at least 6 characters");
+    if (formData.password.length < 8) {
+      setError("Password must be at least 8 characters.");
       return;
     }
-    
     setStep(2);
   };
 
-  const handleSubmit = async (e) => {
+  const passwordStrength = (pwd = "") => {
+    if (pwd.length >= 12) return "Strong";
+    if (pwd.length >= 8) return "Good";
+    if (pwd.length > 0) return "Weak";
+    return "";
+  };
+
+  const handleRequestOtp = async () => {
+    setError("");
+    setLoading(true);
+
+    try {
+      const normalizedPhone = normalizePhoneInput(formData.mobileNumber);
+      if (!normalizedPhone.startsWith("+")) {
+        throw new Error("Enter a phone number with country code, e.g. +91 98765 43210.");
+      }
+
+      await sendPhoneOtp(normalizedPhone);
+      setOtpRequested(true);
+      setOtpSentMessage("OTP sent to your mobile number. Enter it below to continue.");
+      setResendSeconds(60);
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || "Unable to send OTP.");
+      console.error("Send OTP failed:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e) => {
     e.preventDefault();
     setError("");
     setLoading(true);
-    
-    if (!formData.mobileNumber) {
-      setError("Mobile number is required");
-      setLoading(false);
-      return;
-    }
 
     try {
-      const submitData = {
-        name: formData.name,
-        fullName: formData.fullName,
-        email: formData.email,
-        password: formData.password,
-        role: formData.role,
-        age: formData.age ? Number(formData.age) : undefined,
-        mobileNumber: formData.mobileNumber,
-        secondaryMobileNumber: formData.secondaryMobileNumber || undefined
-      };
+      const normalizedPhone = normalizePhoneInput(formData.mobileNumber);
+      if (!normalizedPhone.startsWith("+")) throw new Error("Enter a phone number with country code.");
 
-      // Add address for customers
-      if (formData.role === "user" && formData.street && formData.city) {
-        submitData.addresses = [{
-          label: "Home",
-          street: formData.street,
-          city: formData.city,
-          state: formData.state,
-          postalCode: formData.postalCode,
-          coordinates: { lat: 0, lng: 0 }
-        }];
-      }
+      // Verify OTP with backend - this will create or return a user and provide tokens
+      const authResp = await verifyPhoneOtp(normalizedPhone, formData.otp);
+      if (authResp?.token) {
+        localStorage.setItem("token", authResp.token);
+        if (authResp.refreshToken) localStorage.setItem("refreshToken", authResp.refreshToken);
 
-      const response = await api.post("/auth/register", submitData);
-      if (response.data?.token) {
-        localStorage.setItem("token", response.data.token);
-        window.location.reload();
+        // Complete profile for the logged-in user
+        const submit = {
+          fullName: formData.fullName,
+          age: formData.age ? Number(formData.age) : undefined,
+          mobileNumber: normalizedPhone,
+          secondaryMobileNumber: normalizePhoneInput(formData.secondaryMobileNumber) || undefined,
+          role: formData.role,
+          email: formData.email
+        };
+
+        const completeResp = await api.post("/auth/complete-profile", submit);
+        const tokenAfter = completeResp.data?.token || authResp.token;
+        if (tokenAfter) {
+          localStorage.setItem("token", tokenAfter);
+        }
+
+        if (completeResp.data?.role === "provider") {
+          navigate("/provider-verification");
+        } else if (!completeResp.data?.profileComplete) {
+          navigate("/complete-profile");
+        } else {
+          navigate("/");
+        }
         return;
       }
-      setError(response.data?.error || "Registration failed");
+      setError("Registration failed during verification.");
     } catch (err) {
-      setError(err.response?.data?.error || "Registration failed");
+      const message = err.response?.data?.error || err.message || "Registration failed.";
+      setError(message);
+      console.error("Registration error:", err);
     } finally {
       setLoading(false);
     }
@@ -102,11 +143,11 @@ export default function Register({ setShowRegister }) {
         <div className="auth-header">
           <div className="auth-logo">🚀 FastAid</div>
           <h1 className="auth-title">Create Account</h1>
-          <p className="auth-subtitle">Join FastAid and get instant services</p>
+          <p className="auth-subtitle">Signup with secure mobile OTP and password.</p>
         </div>
-        
+
         {error && <div className="error-message">{error}</div>}
-        
+
         {step === 1 ? (
           <form onSubmit={handleNextStep}>
             <div className="form-group">
@@ -121,7 +162,7 @@ export default function Register({ setShowRegister }) {
                 placeholder="Enter your full name"
               />
             </div>
-            
+
             <div className="form-group">
               <label className="form-label">Email Address</label>
               <input
@@ -134,20 +175,37 @@ export default function Register({ setShowRegister }) {
                 placeholder="Enter your email"
               />
             </div>
-            
+
             <div className="form-group">
               <label className="form-label">Password</label>
-              <input
-                type="password"
-                name="password"
-                value={formData.password}
-                onChange={handleChange}
-                required
-                className="form-input"
-                placeholder="Create a password (min 6 characters)"
-              />
+              <div style={{ position: 'relative' }} className="u-row">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  name="password"
+                  value={formData.password}
+                  onChange={handleChange}
+                  required
+                  className="form-input"
+                  placeholder="Create a strong password"
+                  aria-label="Password"
+                />
+                <button
+                  type="button"
+                  className="tab-btn"
+                  onClick={() => setShowPassword((s) => !s)}
+                  style={{ position: 'absolute', right: 12, top: 8 }}
+                  aria-pressed={showPassword}
+                  aria-label="Toggle password visibility"
+                >
+                  {showPassword ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              <div className="u-row" style={{ justifyContent: 'space-between', marginTop: 8 }}>
+                <small className="form-help-text">Use 8+ characters, mix letters and numbers for best security.</small>
+                <span className="strength-badge">{passwordStrength(formData.password)}</span>
+              </div>
             </div>
-            
+
             <div className="form-group">
               <label className="form-label">I want to register as</label>
               <select
@@ -156,17 +214,17 @@ export default function Register({ setShowRegister }) {
                 onChange={handleChange}
                 className="form-select"
               >
-                <option value="user">👤 Customer - I need services</option>
-                <option value="provider">🔧 Provider - I want to offer services</option>
+                <option value="user">👤 Customer</option>
+                <option value="provider">🔧 Provider</option>
               </select>
             </div>
-            
-            <button type="submit" className="btn btn-primary">
-              Continue
+
+            <button type="submit" className={`btn btn-primary ${loading ? 'loading' : ''}`} disabled={!formData.fullName || !formData.email || formData.password.length < 8 || loading}>
+              {loading ? 'Processing...' : 'Continue'}
             </button>
           </form>
         ) : (
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={(e) => e.preventDefault()}>
             <div className="form-group">
               <label className="form-label">Age</label>
               <input
@@ -180,7 +238,7 @@ export default function Register({ setShowRegister }) {
                 placeholder="Enter your age"
               />
             </div>
-            
+
             <div className="form-group">
               <label className="form-label">Mobile Number *</label>
               <input
@@ -190,10 +248,10 @@ export default function Register({ setShowRegister }) {
                 onChange={handleChange}
                 required
                 className="form-input"
-                placeholder="Enter your mobile number"
+                placeholder="+91 98765 43210"
               />
             </div>
-            
+
             <div className="form-group">
               <label className="form-label">Secondary Mobile Number</label>
               <input
@@ -202,14 +260,13 @@ export default function Register({ setShowRegister }) {
                 value={formData.secondaryMobileNumber}
                 onChange={handleChange}
                 className="form-input"
-                placeholder="Enter secondary mobile number (optional)"
+                placeholder="Optional secondary number"
               />
             </div>
 
             {formData.role === "user" && (
               <>
                 <h3 className="form-section-title">Delivery Address</h3>
-                
                 <div className="form-group">
                   <label className="form-label">Street Address</label>
                   <input
@@ -221,7 +278,6 @@ export default function Register({ setShowRegister }) {
                     placeholder="Enter street address"
                   />
                 </div>
-                
                 <div className="form-row">
                   <div className="form-group">
                     <label className="form-label">City</label>
@@ -231,10 +287,9 @@ export default function Register({ setShowRegister }) {
                       value={formData.city}
                       onChange={handleChange}
                       className="form-input"
-                      placeholder="Enter city"
+                      placeholder="City"
                     />
                   </div>
-                  
                   <div className="form-group">
                     <label className="form-label">State</label>
                     <input
@@ -243,11 +298,10 @@ export default function Register({ setShowRegister }) {
                       value={formData.state}
                       onChange={handleChange}
                       className="form-input"
-                      placeholder="Enter state"
+                      placeholder="State"
                     />
                   </div>
                 </div>
-                
                 <div className="form-group">
                   <label className="form-label">Pincode</label>
                   <input
@@ -256,26 +310,63 @@ export default function Register({ setShowRegister }) {
                     value={formData.postalCode}
                     onChange={handleChange}
                     className="form-input"
-                    placeholder="Enter pincode"
+                    placeholder="Pincode"
                   />
                 </div>
               </>
             )}
-            
-            <div className="button-group">
+
+            <AuthOtp
+              initialPhone={formData.mobileNumber}
+              onVerified={async (authResp) => {
+                try {
+                  if (authResp?.token) {
+                    localStorage.setItem("token", authResp.token);
+                    if (authResp.refreshToken) localStorage.setItem("refreshToken", authResp.refreshToken);
+                  }
+
+                  const submit = {
+                    fullName: formData.fullName,
+                    age: formData.age ? Number(formData.age) : undefined,
+                    mobileNumber: normalizePhoneInput(formData.mobileNumber),
+                    secondaryMobileNumber: normalizePhoneInput(formData.secondaryMobileNumber) || undefined,
+                    role: formData.role,
+                    email: formData.email
+                  };
+
+                  const completeResp = await api.post("/auth/complete-profile", submit);
+                  const tokenAfter = completeResp.data?.token || authResp.token;
+                  if (tokenAfter) localStorage.setItem("token", tokenAfter);
+
+                  if (completeResp.data?.role === "provider") {
+                    navigate("/provider-verification");
+                  } else if (!completeResp.data?.profileComplete) {
+                    navigate("/complete-profile");
+                  } else {
+                    navigate("/");
+                  }
+                } catch (err) {
+                  console.error(err);
+                }
+              }}
+              onCancel={handleBackStep}
+            />
+
+            <div className="button-group" style={{ marginTop: "18px" }}>
               <button type="button" className="btn btn-secondary" onClick={handleBackStep}>
                 Back
-              </button>
-              <button type="submit" className="btn btn-primary" disabled={loading}>
-                {loading ? "Creating Account..." : "Create Account"}
               </button>
             </div>
           </form>
         )}
-        
-        <div className="auth-link">
-          Already have an account?{" "}
-          <a href="#" onClick={(e) => { e.preventDefault(); setShowRegister(false); }}>Sign In</a>
+
+        <div className="auth-footer" style={{ marginTop: 18 }}>
+          <div className="text-muted">Already have an account?</div>
+          <div>
+            <a href="#" onClick={(e) => { e.preventDefault(); navigate("/login"); }} className="btn btn-secondary">
+              Sign In
+            </a>
+          </div>
         </div>
       </div>
     </div>

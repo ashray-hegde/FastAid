@@ -220,4 +220,99 @@ router.delete("/upload-qr/:qrId", verifyToken, async (req, res) => {
   }
 });
 
+const Payment = require("../models/Payment");
+const Booking = require("../models/Booking");
+const User = require("../models/User");
+
+router.get("/payments/pending", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, error: "Admin only" });
+    }
+
+    const payments = await Payment.find({ status: "pending" })
+      .sort({ createdAt: -1 })
+      .populate("userId", "name email walletBalance")
+      .populate("bookingId", "serviceName servicePrice paymentStatus paymentMethod");
+
+    res.json(payments);
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.put("/payments/review/:paymentId", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, error: "Admin only" });
+    }
+    const { action, reason } = req.body;
+    const payment = await Payment.findById(req.params.paymentId);
+    if (!payment) {
+      return res.status(404).json({ success: false, error: "Payment record not found" });
+    }
+
+    if (!["approve", "reject"].includes(action)) {
+      return res.status(400).json({ success: false, error: "Invalid review action" });
+    }
+
+    if (action === "approve") {
+      payment.status = "paid";
+      payment.adminReview = {
+        status: "approved",
+        reviewer: req.user.id,
+        reason: reason || "Approved by admin",
+        reviewedAt: new Date()
+      };
+
+      if (payment.transactionType === "topup") {
+        const user = await User.findById(payment.userId);
+        if (user) {
+          user.walletBalance = Number(user.walletBalance || 0) + Number(payment.amount);
+          await user.save();
+        }
+      }
+      if (payment.bookingId) {
+        const booking = await Booking.findById(payment.bookingId);
+        if (booking) {
+          booking.paymentStatus = "paid";
+          await booking.save();
+        }
+      }
+    } else {
+      payment.status = "failed";
+      payment.adminReview = {
+        status: "rejected",
+        reviewer: req.user.id,
+        reason: reason || "Rejected by admin",
+        reviewedAt: new Date()
+      };
+      if (payment.bookingId) {
+        const booking = await Booking.findById(payment.bookingId);
+        if (booking) {
+          booking.paymentStatus = "failed";
+          await booking.save();
+        }
+      }
+    }
+
+    await payment.save();
+    const io = req.app.get("io");
+    if (io) {
+      io.emit("payment-reviewed", {
+        paymentId: payment._id,
+        status: payment.status,
+        bookingId: payment.bookingId,
+        userId: payment.userId
+      });
+    }
+
+    res.json({ success: true, payment });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

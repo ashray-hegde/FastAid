@@ -1,0 +1,31 @@
+.auth-otp {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-otp .form-input {
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.auth-otp .form-input:focus {
+  transform: translateY(-2px);
+}
+
+.auth-otp .btn {
+  width: 100%;
+}
+
+.auth-otp .btn-link {
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  padding: 8px 0;
+  text-align: left;
+}
+
+@media (max-width: 560px) {
+  .auth-otp {
+    gap: 10px;
+  }
+}

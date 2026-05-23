@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import api from "../api";
-import socket from "../socket";
+import getSocket from "../socket";
+import { decodeJwt } from "../utils/token";
 import LiveMap from "../components/LiveMap";
 import LocationPickerLeaflet from "../components/LocationPickerLeaflet";
 import Skeleton from "../components/Skeleton";
+
+const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:5000";
 import "../components/skeleton.css";
 import { useCart } from "../context/CartContext";
 import { useToast } from "../context/ToastContext";
@@ -21,8 +25,17 @@ export default function UserDashboard() {
   const [showPayment, setShowPayment] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState("upi");
   const [couponCode, setCouponCode] = useState("");
+  const [transactionId, setTransactionId] = useState("");
+  const [paymentNote, setPaymentNote] = useState("");
+  const [proofFile, setProofFile] = useState(null);
+  const [proofUrl, setProofUrl] = useState("");
   const [paymentMethods, setPaymentMethods] = useState({ upiIds: [], qrCodes: [], bankAccounts: [], cardSupported: true, codSupported: true });
   const [addressDetails, setAddressDetails] = useState({});
+  const [savedAddresses, setSavedAddresses] = useState([]);
+  const [selectedAddressId, setSelectedAddressId] = useState(null);
+  const [isAddingAddress, setIsAddingAddress] = useState(false);
+  const [newAddressLabel, setNewAddressLabel] = useState("Home");
+  const selectedAddress = savedAddresses.find((addr) => addr.id === selectedAddressId);
 
   const [user, setUser] = useState(null);
   const [search, setSearch] = useState("");
@@ -44,22 +57,88 @@ export default function UserDashboard() {
   const [providerLocation, setProviderLocation] = useState(null);
   const [trackingProviderId, setTrackingProviderId] = useState(null);
   const [activeTab, setActiveTab] = useState("current");
+  const [cartProcessingIds, setCartProcessingIds] = useState(new Set());
+
+  const loadSavedAddresses = () => {
+    const raw = localStorage.getItem("fastaid_saved_addresses");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        setSavedAddresses(parsed);
+        const active = parsed.find((addr) => addr.id === selectedAddressId) || parsed[0];
+        if (active) {
+          setSelectedAddressId(active.id);
+          setLocation(active.fullAddress || active.address || "");
+          setAddressDetails(active.details || {});
+          setCoordinates(active.coordinates || null);
+        }
+      }
+    } catch (e) {
+      console.warn("Failed to load saved addresses", e);
+    }
+  };
+
+  const persistSavedAddresses = (addresses) => {
+    localStorage.setItem("fastaid_saved_addresses", JSON.stringify(addresses));
+    setSavedAddresses(addresses);
+  };
+
+  const handleSelectAddress = (id) => {
+    const next = savedAddresses.find((addr) => addr.id === id);
+    if (!next) return;
+    setSelectedAddressId(id);
+    setLocation(next.fullAddress || next.address || "");
+    setAddressDetails(next.details || {});
+    setCoordinates(next.coordinates || null);
+    setIsAddingAddress(false);
+  };
+
+  const handleSaveAddress = () => {
+    if (!location?.trim()) {
+      addToast("Enter a valid address before saving.", "error");
+      return;
+    }
+    const nextAddress = {
+      id: `${Date.now()}`,
+      label: newAddressLabel || "Home",
+      fullAddress: location,
+      details: addressDetails,
+      coordinates: coordinates || null,
+    };
+    const nextList = [nextAddress, ...savedAddresses.filter((addr) => addr.id !== nextAddress.id)];
+    persistSavedAddresses(nextList);
+    setSelectedAddressId(nextAddress.id);
+    setIsAddingAddress(false);
+    addToast("Address saved successfully.", "success");
+  };
+
+  useEffect(() => {
+    // Prevent background scroll when payment modal is open
+    if (showPayment) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "auto";
+    }
+    return () => {
+      document.body.style.overflow = "auto";
+    };
+  }, [showPayment]);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
     if (token) {
-      try {
-        const decoded = JSON.parse(atob(token.split(".")[1]));
+      const decoded = decodeJwt(token);
+      if (decoded) {
         setUser(decoded);
-      } catch (err) {
-        console.error("Error decoding token:", err);
       }
     }
     loadServices();
     loadBookings();
     loadUserReviews();
     loadPaymentMethods();
-    socket.on("booking-update", (data) => {
+    loadSavedAddresses();
+    getSocket().on("booking-update", (data) => {
       // if the update concerns the current user's bookings, refresh and show brief alert
       try {
         if (data && data.bookingId) {
@@ -77,24 +156,35 @@ export default function UserDashboard() {
       loadUserReviews();
       loadCart();
     });
-    socket.on("providerLocationUpdate", (data) => {
+    getSocket().on("providerLocationUpdate", (data) => {
       const currentProviderId = trackingProviderId ? trackingProviderId.toString() : null;
       const eventProviderId = data?.providerId ? data.providerId.toString() : null;
       if (eventProviderId && eventProviderId === currentProviderId) {
         setProviderLocation({ lat: data.lat, lng: data.lng });
       }
     });
-    socket.on("payment-config-updated", () => {
+    getSocket().on("payment-config-updated", () => {
       loadPaymentMethods();
       addToast("Payment channels were updated", "info");
     });
-    socket.on("booking-completed", async (data) => {
+    getSocket().on("payment-reviewed", async (data) => {
       try {
         const token = localStorage.getItem('token');
-        let currentUserId = null;
-        if (token) {
-          try { currentUserId = JSON.parse(atob(token.split('.')[1])).id; } catch(e){}
+        const decoded = decodeJwt(token);
+        const currentUserId = decoded?.id || null;
+        if (data?.userId && currentUserId && data.userId.toString() === currentUserId.toString()) {
+          addToast(`Payment ${data.status} for booking ${data.bookingId || ''}`, data.status === 'paid' ? 'success' : 'error');
+          loadBookings();
         }
+      } catch (err) {
+        console.error('Error handling payment-reviewed event:', err);
+      }
+    });
+    getSocket().on("booking-completed", async (data) => {
+      try {
+        const token = localStorage.getItem('token');
+        const decoded = decodeJwt(token);
+        const currentUserId = decoded?.id || null;
         if (!data || !data.bookingId) return;
         // if this event is for me
         if (data.userId && currentUserId && data.userId.toString() === currentUserId.toString()) {
@@ -116,12 +206,23 @@ export default function UserDashboard() {
       }
     });
     return () => {
-      socket.off("booking-update");
-      socket.off("providerLocationUpdate");
-      socket.off("payment-config-updated");
-      socket.off("booking-completed");
+      getSocket().off("booking-update");
+      getSocket().off("providerLocationUpdate");
+      getSocket().off("payment-config-updated");
+      getSocket().off("booking-completed");
     };
   }, [trackingProviderId]);
+
+  useEffect(() => {
+    if (!showMap || !trackingProviderId) return;
+
+    getSocket().emit("get-provider-location", { providerId: trackingProviderId }, (loc) => {
+      if (loc && typeof loc.latitude === "number" && typeof loc.longitude === "number") {
+        setProviderLocation({ lat: loc.latitude, lng: loc.longitude, updatedAt: loc.timestamp });
+      }
+    });
+  }, [showMap, trackingProviderId]);
+
   const { addToast } = useToast();
 
   const loadServices = async () => {
@@ -320,26 +421,48 @@ export default function UserDashboard() {
         addToast("Select or allow location first", "error");
         return;
       }
+      if (!isCartCheckout && !selectedService) {
+        addToast("Select a service before checkout", "error");
+        return;
+      }
+
       const payload = {
         location,
         coordinates,
         locationDetails: addressDetails,
         paymentMethod,
-        couponCode: couponCode || undefined
+        couponCode: couponCode || undefined,
+        transactionId: transactionId || (paymentMethod !== "cod" ? `TX-${Date.now()}` : null),
+        transactionNote: paymentNote || undefined,
+        proofImage: proofUrl || undefined
       };
 
       if (!isCartCheckout) {
         payload.serviceId = selectedService?._id;
         payload.servicePrice = Number(predictedPrice || selectedService?.basePrice || 499);
         payload.tip = Number(bookingTip || 0);
-        payload.transactionId = paymentMethod !== "cod" ? `TX-${Date.now()}` : null;
       }
 
       const endpoint = isCartCheckout ? "/cart/checkout" : "/bookings/book";
       const response = await api.post(endpoint, payload);
 
       if (response.data) {
-        addToast("Booking created successfully!", "success");
+        let nextStatusMessage = "Booking placed successfully.";
+        if (paymentMethod === "wallet") {
+          nextStatusMessage = "Booking confirmed using wallet balance.";
+        } else if (paymentMethod === "cod") {
+          nextStatusMessage = "Booking placed for cash-on-delivery.";
+        } else if (paymentMethod === "upi") {
+          nextStatusMessage = "Booking placed. Complete the payment using your UPI app.";
+        } else if (paymentMethod === "qr") {
+          nextStatusMessage = "Booking placed. Scan the QR code and complete payment.";
+        } else if (paymentMethod === "manual") {
+          nextStatusMessage = "Booking placed. Your payment proof is pending admin approval.";
+        } else {
+          nextStatusMessage = "Booking placed and awaiting payment verification.";
+        }
+
+        addToast(nextStatusMessage, "success");
         setShowPayment(false);
         setSelectedService(null);
         setIsCartCheckout(false);
@@ -347,6 +470,10 @@ export default function UserDashboard() {
         setCoordinates(null);
         setShowQR(false);
         setCouponCode("");
+        setTransactionId("");
+        setPaymentNote("");
+        setProofFile(null);
+        setProofUrl("");
         setPredictedPrice(null);
         setSuggestedTip(0);
         setBookingTip(0);
@@ -467,29 +594,7 @@ export default function UserDashboard() {
         })()
       )}
 
-      {/* Header */}
-      <header className="header">
-        <h1 className="logo">FASTAID</h1>
-        <div className="account-info">
-          <div className="welcome-group">
-            <span className="welcome-text">Welcome, {user?.name || 'User'} 👋</span>
-            <div className="dashboard-nav">
-              <button className={`tab-btn ${activeTab === 'current' ? 'active' : ''}`} onClick={() => setActiveTab('current')}>
-                Current
-              </button>
-              <button className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`} onClick={() => setActiveTab('history')}>
-                History
-              </button>
-            </div>
-          </div>
-          <button className="logout-btn" onClick={() => {
-            localStorage.removeItem("token");
-            window.location.href = "/";
-          }}>
-            Logout
-          </button>
-        </div>
-      </header>
+      {/* Header removed — navigation handled by main Navbar */}
 
       {/* Hero Section */}
       <section className="hero">
@@ -568,26 +673,71 @@ export default function UserDashboard() {
         ) : cart?.items?.length > 0 ? (
           <div className="cart-grid">
             <div className="cart-items">
-              {cart.items.map((item) => (
-                <div key={item._id} className="cart-card">
-                  <div>
-                    <h4>{item.serviceName}</h4>
-                    <p>Price: ₹{item.price}</p>
-                    <p>Qty: {item.quantity}</p>
-                    <div className="cart-actions">
-                      <button className="btn btn-small" onClick={() => updateItem(item._id, { quantity: item.quantity + 1 })}>
-                        +
-                      </button>
-                      <button className="btn btn-small" onClick={() => updateItem(item._id, { quantity: Math.max(1, item.quantity - 1) })}>
-                        -
-                      </button>
-                      <button className="btn btn-danger btn-small" onClick={() => removeItem(item._id)}>
-                        Remove
-                      </button>
+              {cart.items.map((item) => {
+                const itemId = item._id || item.id;
+                const processing = cartProcessingIds.has(String(itemId));
+                return (
+                  <div key={itemId} className="cart-card">
+                    <div>
+                      <h4>{item.serviceName}</h4>
+                      <p>Price: ₹{item.price}</p>
+                      <p>Qty: {item.quantity}</p>
+                      <div className="cart-actions">
+                        <button
+                          className="btn btn-small"
+                          disabled={processing}
+                          onClick={async () => {
+                            try {
+                              setCartProcessingIds((s) => new Set([...s, String(itemId)]));
+                              await updateItem(itemId, { quantity: item.quantity + 1 });
+                            } catch (e) {
+                              console.error(e);
+                            } finally {
+                              setCartProcessingIds((s) => { const n = new Set(s); n.delete(String(itemId)); return n; });
+                            }
+                          }}
+                        >
+                          +
+                        </button>
+
+                        <button
+                          className="btn btn-small"
+                          disabled={processing}
+                          onClick={async () => {
+                            try {
+                              setCartProcessingIds((s) => new Set([...s, String(itemId)]));
+                              await updateItem(itemId, { quantity: Math.max(1, item.quantity - 1) });
+                            } catch (e) {
+                              console.error(e);
+                            } finally {
+                              setCartProcessingIds((s) => { const n = new Set(s); n.delete(String(itemId)); return n; });
+                            }
+                          }}
+                        >
+                          -
+                        </button>
+
+                        <button
+                          className="btn btn-danger btn-small"
+                          disabled={processing}
+                          onClick={async () => {
+                            try {
+                              setCartProcessingIds((s) => new Set([...s, String(itemId)]));
+                              await removeItem(itemId);
+                            } catch (e) {
+                              console.error(e);
+                            } finally {
+                              setCartProcessingIds((s) => { const n = new Set(s); n.delete(String(itemId)); return n; });
+                            }
+                          }}
+                        >
+                          {processing ? "Removing..." : "Remove"}
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <div className="cart-summary">
               <p>Item total: ₹{cart.subtotal || 0}</p>
@@ -611,10 +761,11 @@ export default function UserDashboard() {
             </div>
           </div>
         ) : (
-          <div className="empty-state">
+          <div className="empty-state modern-empty">
             <div className="empty-state-icon">🛒</div>
-            <h3>Cart is empty</h3>
-            <p>Add services to your cart from the list above.</p>
+            <h3>Your cart is waiting</h3>
+            <p>Explore services and add them to your cart — checkout is fast and secure.</p>
+            <button className="btn btn-primary" onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}>Browse Services</button>
           </div>
         )}
       </section>
@@ -724,7 +875,14 @@ export default function UserDashboard() {
           <div className="tracking-card">
             <h3>Live tracking for {activeBooking.serviceName}</h3>
             <p>Status: <strong>{activeBooking.status}</strong></p>
-            <LiveMap providerLocation={providerLocation} providerId={trackingProviderId} bookingId={activeBooking?._id || activeBooking?.id} />
+            <LiveMap
+              providerLocation={providerLocation}
+              providerId={trackingProviderId}
+              bookingId={activeBooking?._id || activeBooking?.id}
+              customerLocation={activeBooking?.coordinates}
+              provider={activeBooking?.providerId}
+              serviceName={activeBooking?.serviceName}
+            />
             <button className="btn btn-secondary" onClick={() => setShowMap(false)}>
               Close Tracking
             </button>
@@ -735,144 +893,394 @@ export default function UserDashboard() {
       {/* Payment Modal */}
       {showPayment && (
         <div className="payment-modal">
-          <div className="payment-content">
-            <h3>{isCartCheckout ? "Cart Checkout" : `Booking: ${selectedService?.name}`}</h3>
-            <p className="modal-subtitle">Pay securely with trusted checkout options</p>
+          <div className="payment-content modern-payment">
+            <h3 className="payment-title">{isCartCheckout ? "Cart Checkout" : `Pay for: ${selectedService?.name || 'Service'}`}</h3>
+            <p className="modal-subtitle">Secure payment — choose a method below to complete your order</p>
             {!showQR ? (
               <>
-                <div className="form-group">
-                  <label className="form-label">Location</label>
-                  <p className="form-help-text">
-                    First detect your current location for fast accuracy, then refine the address manually if needed.
-                  </p>
-                  <LocationPickerLeaflet
-                    value={location}
-                    onChange={(val) => {
-                      setLocation(typeof val === "string" ? val : val.display || location);
-                      setCoordinates(null);
-                    }}
-                    onAddressSelect={(details) => {
-                      setAddressDetails(details);
-                      setLocation(`${details.street || ""} ${details.city || ""} ${details.state || ""}`.trim());
-                    }}
-                    coordinates={coordinates}
-                    onCoordinatesChange={(coords) => {
-                      setCoordinates(coords);
-                    }}
-                    placeholder="Enter your city or street"
-                    maxSuggestions={8}
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Payment Method</label>
-                  <select
-                    value={paymentMethod}
-                    onChange={(e) => setPaymentMethod(e.target.value)}
-                    className="form-select"
-                  >
-                    {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length > 0 && <option value="upi">UPI</option>}
-                    {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length > 0 && <option value="qr">QR Code</option>}
-                    {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length > 0 && <option value="bank">Bank Transfer</option>}
-                    {paymentMethods.cardSupported && <option value="card">Credit/Debit Card</option>}
-                    {paymentMethods.codSupported && <option value="cod">Cash on Delivery</option>}
-                    <option value="wallet">Wallet</option>
-                  </select>
-                </div>
-
-                {isCartCheckout && (
-                  <div className="checkout-summary">
-                    <h4>Order Summary</h4>
-                    <div className="checkout-items">
-                      {cart.items.map((item) => (
-                        <div key={item._id} className="checkout-item">
-                          <span>{item.serviceName} x{item.quantity}</span>
-                          <span>₹{item.price * item.quantity}</span>
+                <div className="payment-grid">
+                  <aside className="payment-side summary-side">
+                    <div className="payment-summary-card">
+                      <div className="summary-top">
+                        <div className="service-chip">{getServiceIcon(selectedService?.name)}</div>
+                        <div>
+                          <span className="summary-tag">{isCartCheckout ? "Cart Checkout" : "Order Summary"}</span>
+                          <h4>{isCartCheckout ? `${cart.items.length} services selected` : selectedService?.name || "Service details"}</h4>
+                          <p>{isCartCheckout ? "Confirm your cart items before checkout." : selectedService?.description || "Fast booking with secure payment."}</p>
                         </div>
-                      ))}
-                    </div>
-                    <div className="checkout-total">
-                      <strong>Total:</strong> ₹{cart.total || 0}
-                    </div>
-                  </div>
-                )}
+                      </div>
 
-                <div className="payment-sources">
-                  {paymentMethod === "upi" && (
-                    <div className="payment-source">
-                      <h4>UPI IDs</h4>
-                      {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length ? paymentMethods.upiIds.filter((m) => m.enabled !== false).map((upi, index) => (
-                        <p key={index}>{upi.label || "UPI"}: {upi.value}</p>
-                      )) : <p>No UPI IDs configured.</p>}
-                    </div>
-                  )}
+                      <div className="summary-items">
+                        {isCartCheckout ? (
+                          cart.items.map((item) => (
+                            <div key={item._id} className="summary-line">
+                              <span>{item.serviceName} × {item.quantity}</span>
+                              <strong>₹{item.price * item.quantity}</strong>
+                            </div>
+                          ))
+                        ) : (
+                          <>
+                            <div className="summary-line">
+                              <span>Base price</span>
+                              <strong>₹{Number(selectedService?.basePrice || predictedPrice || 0).toFixed(2)}</strong>
+                            </div>
+                            <div className="summary-line">
+                              <span>Suggested tip</span>
+                              <strong>₹{Number(suggestedTip || 0).toFixed(2)}</strong>
+                            </div>
+                          </>
+                        )}
+                      </div>
 
-                  {paymentMethod === "bank" && (
-                    <div className="payment-source">
-                      <h4>Bank Transfer</h4>
-                      {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length ? paymentMethods.bankAccounts.filter((m) => m.enabled !== false).map((bank, index) => (
-                        <p key={index}>{bank.bankName}: {bank.accountName} / {bank.ifsc}</p>
-                      )) : <p>No bank accounts configured.</p>}
-                    </div>
-                  )}
+                      <div className="summary-divider" />
 
-                  {paymentMethod === "qr" && (
-                    <div className="payment-source">
-                      <h4>QR Codes</h4>
-                      {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length ? paymentMethods.qrCodes.filter((m) => m.enabled !== false).map((qr, index) => (
-                        <img key={index} src={`http://localhost:5000${qr.url}`} alt={qr.label} className="payment-qr-image" />
-                      )) : <p>No QR codes configured.</p>}
+                      <div className="summary-total-row">
+                        <span>Total</span>
+                        <strong>₹{isCartCheckout ? (cart.total || 0) : Number(predictedPrice || selectedService?.basePrice || 0) + Number(bookingTip || 0)}</strong>
+                      </div>
                     </div>
-                  )}
 
-                  {paymentMethod === "cod" && (
-                    <div className="payment-source">
-                      <h4>Cash on Delivery</h4>
-                      <p>Please pay the provider in cash at the time of service.</p>
-                    </div>
-                  )}
-                </div>
-
-                {!isCartCheckout && selectedService && (
-                  <div className="pricing-summary">
-                    <div className="pricing-row">
-                      <span>Predicted service price</span>
-                      <strong>₹{Number(predictedPrice ?? selectedService?.basePrice ?? 0).toFixed(2)}</strong>
-                    </div>
-                    <div className="pricing-row">
-                      <span>Recommended tip</span>
-                      <strong>₹{Number(suggestedTip ?? 0).toFixed(2)}</strong>
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">Your tip amount</label>
+                    <div className="payment-card coupon-card">
+                      <div className="card-header">
+                        <span>Promo code</span>
+                        <small>Apply instantly</small>
+                      </div>
                       <input
-                        type="number"
-                        min="0"
-                        className="form-input"
-                        value={bookingTip}
-                        onChange={(e) => setBookingTip(Number(e.target.value))}
+                        type="text"
+                        className="promo-input"
+                        placeholder="Enter code"
+                        value={couponCode}
+                        onChange={(e) => setCouponCode(e.target.value)}
                       />
                     </div>
-                  </div>
-                )}
 
-                <div className="form-group">
-                  <label className="form-label">Coupon Code</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    placeholder="Enter coupon code"
-                    value={couponCode}
-                    onChange={(e) => setCouponCode(e.target.value)}
-                  />
+                    <div className="payment-card trust-card">
+                      <div className="trust-icon">🔒</div>
+                      <div>
+                        <strong>Secure checkout</strong>
+                        <p>256-bit encryption, trusted by thousands of customers.</p>
+                      </div>
+                    </div>
+                  </aside>
+
+                  <section className="payment-side form-side">
+                    <div className="address-panel section-card">
+                      <div className="section-header">
+                        <span className="section-label">Delivery address</span>
+                        <p className="section-description">Choose an existing address or add a new delivery location.</p>
+                      </div>
+                      {savedAddresses.length > 0 && (
+                        <div className="address-cards">
+                          {savedAddresses.map((addr) => (
+                            <button
+                              key={addr.id}
+                              type="button"
+                              className={`address-card ${selectedAddressId === addr.id ? "selected" : ""}`}
+                              onClick={() => handleSelectAddress(addr.id)}
+                            >
+                              <div className="address-card-icon">🏠</div>
+                              <div>
+                                <p className="address-card-title">{addr.label}</p>
+                                <p className="address-card-copy">{addr.fullAddress}</p>
+                              </div>
+                              <span className="address-badge">{selectedAddressId === addr.id ? "Selected" : "Select"}</span>
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            className={`address-card add-new ${isAddingAddress ? "selected" : ""}`}
+                            onClick={() => {
+                              setIsAddingAddress(true);
+                              setSelectedAddressId(null);
+                              setNewAddressLabel("Home");
+                            }}
+                          >
+                            <div className="address-card-icon">+</div>
+                            <div>
+                              <p className="address-card-title">Add new address</p>
+                              <p className="address-card-copy">Create a new delivery location</p>
+                            </div>
+                          </button>
+                        </div>
+                      )}
+
+                      {(!savedAddresses.length || isAddingAddress) && (
+                        <div className="new-address-panel">
+                          <div className="section-header">
+                            <span className="section-label">Enter delivery location</span>
+                            <p className="section-description">Search for your address or use the picker to set it precisely.</p>
+                          </div>
+                          <LocationPickerLeaflet
+                            value={location}
+                            onChange={(val) => {
+                              setLocation(typeof val === "string" ? val : val.display || location);
+                              setCoordinates(null);
+                            }}
+                            onAddressSelect={(details) => {
+                              setAddressDetails(details);
+                              setCoordinates(details.coordinates || null);
+                              setLocation(`${details.street || ""} ${details.city || ""} ${details.state || ""}`.trim() || details.fullAddress || location);
+                            }}
+                            coordinates={coordinates}
+                            onCoordinatesChange={(coords) => {
+                              setCoordinates(coords);
+                            }}
+                            placeholder="Enter your street, city or area"
+                            maxSuggestions={8}
+                          />
+                          <div className="form-group">
+                            <label className="form-label">Address label</label>
+                            <input
+                              type="text"
+                              className="form-input"
+                              placeholder="Home, Work, Office"
+                              value={newAddressLabel}
+                              onChange={(e) => setNewAddressLabel(e.target.value)}
+                            />
+                          </div>
+                          <div className="payment-buttons">
+                            <button className="pay-btn" type="button" onClick={handleSaveAddress}>
+                              Save address
+                            </button>
+                            <button className="close-btn" type="button" onClick={() => setIsAddingAddress(false)}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="payment-step-pill">
+                      <span className="step active">1</span>
+                      <span className="step-text">Choose payment</span>
+                    </div>
+
+                    <div className="payment-section">
+                      <div className="section-header">
+                        <span className="section-label">Payment method</span>
+                        <p className="section-description">Tap a method to continue with a fast checkout flow.</p>
+                      </div>
+                      <div className="payment-method-grid">
+                        {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length > 0 && (
+                          <button type="button" className={`method-card ${paymentMethod === "upi" ? "active" : ""}`} onClick={() => setPaymentMethod("upi")}>UPI</button>
+                        )}
+                        {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length > 0 && (
+                          <button type="button" className={`method-card ${paymentMethod === "qr" ? "active" : ""}`} onClick={() => setPaymentMethod("qr")}>QR Code</button>
+                        )}
+                        {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length > 0 && (
+                          <button type="button" className={`method-card ${paymentMethod === "bank" ? "active" : ""}`} onClick={() => setPaymentMethod("bank")}>Net Banking</button>
+                        )}
+                        {paymentMethods.cardSupported && (
+                          <button type="button" className={`method-card ${paymentMethod === "card" ? "active" : ""}`} onClick={() => setPaymentMethod("card")}>Card</button>
+                        )}
+                        <button type="button" className={`method-card ${paymentMethod === "manual" ? "active" : ""}`} onClick={() => setPaymentMethod("manual")}>Manual</button>
+                        {paymentMethods.codSupported && (
+                          <button type="button" className={`method-card ${paymentMethod === "cod" ? "active" : ""}`} onClick={() => setPaymentMethod("cod")}>Cash</button>
+                        )}
+                        <button type="button" className={`method-card ${paymentMethod === "wallet" ? "active" : ""}`} onClick={() => setPaymentMethod("wallet")}>Wallet</button>
+                      </div>
+                    </div>
+
+                    {selectedAddress && (
+                      <div className="payment-section section-card">
+                        <div className="section-header">
+                          <span className="section-label">Selected delivery address</span>
+                          <p className="section-description">This address will be used to assign the nearest provider and confirm your booking.</p>
+                        </div>
+                        <div className="summary-items">
+                          <div className="detail-row">
+                            <span>Delivery address</span>
+                            <strong>{selectedAddress.fullAddress}</strong>
+                          </div>
+                          {selectedAddress.label && (
+                            <div className="detail-row">
+                              <span>Address label</span>
+                              <strong>{selectedAddress.label}</strong>
+                            </div>
+                          )}
+                        </div>
+                        <div className="payment-buttons">
+                          <button className="close-btn" type="button" onClick={() => setIsAddingAddress(true)}>
+                            Change address
+                          </button>
+                          <button className="pay-btn" type="button" onClick={() => setIsAddingAddress(true)}>
+                            Edit / add address
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="payment-section payment-method-details">
+                      {paymentMethod === "upi" && (
+                        <>
+                          <h4 className="detail-title">UPI IDs</h4>
+                          <p className="detail-copy">Scan or copy any of these UPI handles to complete payment.</p>
+                          {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length ? paymentMethods.upiIds.filter((m) => m.enabled !== false).map((upi, index) => (
+                            <div key={index} className="detail-row"><span>{upi.label || "UPI"}</span><strong>{upi.value}</strong></div>
+                          )) : <p className="note-text">No UPI IDs configured.</p>}
+                        </>
+                      )}
+
+                      {paymentMethod === "qr" && (
+                        <>
+                          <h4 className="detail-title">Scan QR Code</h4>
+                          <p className="detail-copy">Use your payment app to scan one of the QR codes below.</p>
+                          {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length ? (
+                            <div className="payment-qr-list">
+                              {paymentMethods.qrCodes.filter((m) => m.enabled !== false).map((qr, index) => (
+                                <div key={index} className="payment-qr-card modern-qr-card">
+                                  <img src={`${API_BASE_URL}${qr.url}`} alt={qr.label} className="payment-qr-image" />
+                                  <strong>{qr.label}</strong>
+                                </div>
+                              ))}
+                            </div>
+                          ) : <p className="note-text">No QR codes configured.</p>}
+                        </>
+                      )}
+
+                      {paymentMethod === "bank" && (
+                        <>
+                          <h4 className="detail-title">Bank Transfer</h4>
+                          <p className="detail-copy">Transfer funds and add the transaction ID below.</p>
+                          {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length ? paymentMethods.bankAccounts.filter((m) => m.enabled !== false).map((bank, index) => (
+                            <div key={index} className="detail-row"><span>{bank.bankName}</span><strong>{bank.accountName} / {bank.ifsc}</strong></div>
+                          )) : <p className="note-text">No bank details configured.</p>}
+                        </>
+                      )}
+
+                      {paymentMethod === "card" && (
+                        <>
+                          <h4 className="detail-title">Card Payment</h4>
+                          <p className="detail-copy">Proceed with your card details and enter the reference once complete.</p>
+                        </>
+                      )}
+
+                      {paymentMethod === "manual" && (
+                        <>
+                          <h4 className="detail-title">Manual Payment</h4>
+                          <p className="detail-copy">Upload proof of payment and wait while admin reviews the request.</p>
+                        </>
+                      )}
+
+                      {paymentMethod === "cod" && (
+                        <>
+                          <h4 className="detail-title">Cash on Delivery</h4>
+                          <p className="detail-copy">Pay the provider in cash after the service is completed.</p>
+                        </>
+                      )}
+
+                      {paymentMethod === "wallet" && (
+                        <>
+                          <h4 className="detail-title">Wallet Checkout</h4>
+                          <p className="detail-copy">Your wallet balance will be used automatically if available.</p>
+                        </>
+                      )}
+                    </div>
+
+                    {(paymentMethod === "manual" || paymentMethod === "bank" || paymentMethod === "card") && (
+                      <>
+                        <div className="form-group">
+                          <label className="form-label">Transaction / Reference ID</label>
+                          <input
+                            type="text"
+                            className="form-input"
+                            placeholder="Enter transaction ID or reference"
+                            value={transactionId}
+                            onChange={(e) => setTransactionId(e.target.value)}
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">Payment Notes</label>
+                          <textarea
+                            className="form-input"
+                            placeholder="Enter details for admin review (optional)"
+                            value={paymentNote}
+                            onChange={(e) => setPaymentNote(e.target.value)}
+                            rows={3}
+                          />
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label">Upload payment screenshot (optional)</label>
+                          <input type="file" accept="image/*" onChange={(e) => setProofFile(e.target.files?.[0] || null)} />
+                          {proofFile && (
+                            <div className="proof-preview-row">
+                              <small>{proofFile.name}</small>
+                              <button className="btn btn-danger btn-small" style={{ marginLeft: 8 }} onClick={() => { setProofFile(null); setProofUrl(""); }}>
+                                Remove
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+
+                    <div className="payment-buttons">
+                      <button
+                        className="pay-btn"
+                        onClick={async () => {
+                          try {
+                            await requestCurrentLocation();
+                            // upload proof first if present
+                            if (proofFile && !proofUrl) {
+                              const fd = new FormData();
+                              fd.append("proof", proofFile);
+                              try {
+                                const resp = await api.post("/payments/upload-proof", fd, { headers: { "Content-Type": "multipart/form-data" } });
+                                setProofUrl(resp.data.url || resp.data?.url || "");
+                              } catch (err) {
+                                console.error("Proof upload failed", err);
+                                addToast("Could not upload proof image", "error");
+                                return;
+                              }
+                            }
+
+                            if (paymentMethod === "qr") {
+                              setShowQR(true);
+                              return;
+                            }
+
+                            await handlePaymentSuccess();
+                          } catch (err) {
+                            console.error("Payment process halted:", err);
+                          }
+                        }}
+                        disabled={gpsLoading}
+                      >
+                        {gpsLoading ? "Locating..." : paymentMethod === "wallet" ? "Pay with Wallet" : paymentMethod === "cod" ? "Confirm Cash" : "Continue to Pay"}
+                      </button>
+                      <button className="close-btn" onClick={() => {
+                        setShowPayment(false);
+                        setSelectedService(null);
+                        setIsCartCheckout(false);
+                        setLocation("");
+                        setShowQR(false);
+                      }}>
+                        Close
+                      </button>
+                    </div>
+                  </section>
                 </div>
-
-                <div className="payment-buttons">
+                <div className="mobile-payment-bar">
+                  <div>
+                    <span className="mobile-pay-label">Total</span>
+                    <strong>₹{isCartCheckout ? (cart.total || 0) : Number(predictedPrice || selectedService?.basePrice || 0) + Number(bookingTip || 0)}</strong>
+                  </div>
                   <button
-                    className="pay-btn"
+                    className="pay-btn mobile-pay-action"
                     onClick={async () => {
                       try {
                         await requestCurrentLocation();
+                        if (proofFile && !proofUrl) {
+                          const fd = new FormData();
+                          fd.append("proof", proofFile);
+                          try {
+                            const resp = await api.post("/payments/upload-proof", fd, { headers: { "Content-Type": "multipart/form-data" } });
+                            setProofUrl(resp.data.url || resp.data?.url || "");
+                          } catch (err) {
+                            console.error("Proof upload failed", err);
+                            addToast("Could not upload proof image", "error");
+                            return;
+                          }
+                        }
                         if (paymentMethod === "qr") {
                           setShowQR(true);
                           return;
@@ -885,15 +1293,6 @@ export default function UserDashboard() {
                     disabled={gpsLoading}
                   >
                     {gpsLoading ? "Locating..." : "Continue"}
-                  </button>
-                  <button className="close-btn" onClick={() => {
-                    setShowPayment(false);
-                    setSelectedService(null);
-                    setIsCartCheckout(false);
-                    setLocation("");
-                    setShowQR(false);
-                  }}>
-                    Close
                   </button>
                 </div>
               </>
@@ -911,7 +1310,7 @@ export default function UserDashboard() {
 )
 .map((qr, index) => (
                       <div key={index} className="payment-qr-card">
-                        <img src={`http://localhost:5000${qr.url}`} alt={qr.label} className="payment-qr-image" />
+                        <img src={`${API_BASE_URL}${qr.url}`} alt={qr.label} className="payment-qr-image" />
                         <p>{qr.label}</p>
                       </div>
                     ))

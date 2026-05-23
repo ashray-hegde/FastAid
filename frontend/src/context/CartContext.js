@@ -52,12 +52,15 @@ export function CartProvider({ children }) {
 
   const removeItem = async (itemId) => {
     try {
-      await api.delete(`/cart/item/${itemId}`);
+      const id = String(itemId);
+      await api.delete(`/cart/item/${id}`);
       await loadCart();
       addToast("Removed from cart", "info");
     } catch (err) {
       setError(err.message || "Unable to remove cart item");
       addToast("Unable to remove cart item", "error");
+      // Always try to reload cart to avoid stale UI
+      await loadCart();
     }
   };
 

@@ -5,9 +5,12 @@ module.exports = mongoose.model("Provider", new mongoose.Schema({
   documents: {
     aadhar: String,
     pan: String,
-    voter: String
+    voter: String,
+    uploadedAt: Date
   },
   verified: { type: Boolean, default: false },
+  verificationStatus: { type: String, enum: ["unsubmitted", "pending", "approved", "rejected"], default: "unsubmitted" },
+  verificationReason: String,
   active: { type: Boolean, default: true },
   serviceCategories: [String],
   lastOnlineAt: { type: Date, default: Date.now },

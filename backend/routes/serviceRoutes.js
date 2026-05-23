@@ -44,21 +44,21 @@ router.put("/:id", verifyToken, async (req, res) => {
   }
 });
 
+router.get("/category/:category", async (req, res) => {
+  try {
+    const services = await Service.find({ category: req.params.category });
+    res.json(services);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.delete("/:id", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Admin access required" });
     const service = await Service.findByIdAndDelete(req.params.id);
     if (!service) return res.status(404).json({ error: "Service not found" });
     res.json({ message: "Service deleted successfully" });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-router.get("/category/:category", async (req, res) => {
-  try {
-    const services = await Service.find({ category: req.params.category });
-    res.json(services);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

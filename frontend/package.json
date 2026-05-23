@@ -6,11 +6,17 @@
   "scripts": {
     "dev": "react-scripts start",
     "start": "react-scripts start",
-    "build": "react-scripts build"
+    "build": "react-scripts build",
+    "test:e2e": "playwright test --config=e2e/playwright.config.js",
+    "test:e2e:headed": "playwright test --config=e2e/playwright.config.js --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.39.0"
   },
   "dependencies": {
     "@react-google-maps/api": "^2.19.2",
     "axios": "^1.6.0",
+    "firebase": "^12.13.0",
     "framer-motion": "^11.0.0",
     "indian-cities-json": "^2.0.0",
     "leaflet": "^1.9.4",

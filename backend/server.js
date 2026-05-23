@@ -3,6 +3,7 @@ require("dotenv").config();
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
+const passport = require("passport");
 
 const cors = require("cors");
 const helmet = require("helmet");
@@ -11,6 +12,7 @@ const mongoSanitize = require("express-mongo-sanitize");
 const xss = require("xss-clean");
 
 const path = require("path");
+require("./config/passport");
 
 const connectDB = require("./config/db");
 
@@ -79,6 +81,8 @@ app.use(express.urlencoded({
   extended: true
 }));
 
+app.use(passport.initialize());
+
 app.use(mongoSanitize());
 
 app.use(xss());
@@ -102,19 +106,11 @@ app.use(
 // RATE LIMITER
 // ---------------------
 
-const limiter = rateLimit({
-
-  windowMs:
-    15 * 60 * 1000,
-
-  max: 120,
-
-  message:
-    "Too many requests from this IP, please try again after 15 minutes"
-
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === "production" ? 20 : 100,
+  message: "Too many requests from this IP, please try again after 15 minutes"
 });
-
-app.use(limiter);
 
 // ---------------------
 // ROUTES
@@ -122,6 +118,7 @@ app.use(limiter);
 
 app.use(
   "/api/auth",
+  authLimiter,
   require("./routes/authRoutes")
 );
 
