@@ -191,7 +191,7 @@ export default function Login({ setRole }) {
 
         <div className="auth-footer">
           <div className="social-login">
-            <a className="btn btn-secondary" href={`${process.env.REACT_APP_API_URL || "http://localhost:5000"}/api/auth/google`}>
+            <a className="btn btn-secondary" href={`${process.env.REACT_APP_API_URL}/api/auth/google`}>
               Continue with Google
             </a>
           </div>

@@ -2,7 +2,7 @@ const axios = require('axios');
 const mongoose = require('mongoose');
 require('dotenv').config();
 
-const API_URL = process.env.API_URL || 'http://localhost:5000';
+const API_URL = process.env.API_URL;
 const MONGO_URI = process.env.MONGO_URI || process.env.MONGO_URL || 'mongodb://localhost:27017/fastaid';
 const MOBILE = process.argv[2] || '+911234567890';
 const FULLNAME = process.argv[3] || 'Smoke User';

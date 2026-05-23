@@ -105,10 +105,17 @@ router.delete("/item/:itemId", verifyToken, async (req, res) => {
   try {
     const cart = await Cart.findOne({ userId: req.user.id });
     if (!cart) return res.status(404).json({ error: "Cart not found" });
-    cart.items.id(req.params.itemId)?.remove();
-    calculateCart(cart);
-    await cart.save();
-    res.json(cart);
+    const itemId = req.params.itemId;
+    // Remove by matching string or ObjectId
+    const idx = cart.items.findIndex(item => String(item._id) === String(itemId));
+    if (idx !== -1) {
+      cart.items.splice(idx, 1);
+      calculateCart(cart);
+      await cart.save();
+      return res.json(cart);
+    } else {
+      return res.status(404).json({ error: "Cart item not found" });
+    }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

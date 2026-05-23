@@ -7,7 +7,7 @@ import LiveMap from "../components/LiveMap";
 import LocationPickerLeaflet from "../components/LocationPickerLeaflet";
 import Skeleton from "../components/Skeleton";
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:5000";
+const API_BASE_URL = process.env.REACT_APP_API_URL;
 import "../components/skeleton.css";
 import { useCart } from "../context/CartContext";
 import { useToast } from "../context/ToastContext";

@@ -5,7 +5,7 @@ require('dotenv').config();
 const OtpCode = require('../models/OtpCode');
 const Lockout = require('../models/Lockout');
 
-const API_URL = process.env.API_URL || 'http://localhost:5000';
+const API_URL = process.env.API_URL;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/fastaid';
 const MOBILE = process.argv[2] || '+911234567890';
 
