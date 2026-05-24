@@ -1,6 +1,93 @@
-export default function Payment({ onSuccess, scannerImageSrc }) {
-  const qrSrc = scannerImageSrc || "/scanner/scanner.jpeg";
+import { useState } from "react";
+import api from "../api";
 
+export default function Payment({ onSuccess, scannerImageSrc, amount = 0, bookingId, user }) {
+  const qrSrc = scannerImageSrc || "/scanner/scanner.jpeg";
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  // Dynamically load Razorpay script
+  const loadRazorpayScript = () => {
+    return new Promise((resolve) => {
+      if (window.Razorpay) return resolve(true);
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  };
+
+  const handleRazorpayPayment = async () => {
+    setError("");
+    setLoading(true);
+    const key = import.meta.env.VITE_RAZORPAY_KEY_ID;
+    try {
+      const ok = await loadRazorpayScript();
+      if (!ok) {
+        setError("Failed to load Razorpay. Try again later.");
+        setLoading(false);
+        return;
+      }
+      // Create order on backend
+      const orderRes = await api.post("/payment/create-order", {
+        amount,
+        currency: "INR",
+        receipt: bookingId,
+        notes: { bookingId, userId: user?._id || user?.id }
+      });
+      const order = orderRes.data.order;
+      if (!order || !order.id) throw new Error("Order creation failed");
+
+      const options = {
+        key,
+        amount: order.amount,
+        currency: order.currency,
+        name: "FastAid",
+        description: "Service Booking Payment",
+        order_id: order.id,
+        handler: async function (response) {
+          // Verify payment on backend
+          try {
+            setLoading(true);
+            const verifyRes = await api.post("/payment/verify-payment", {
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+              bookingId,
+              type: "booking"
+            });
+            if (verifyRes.data.success) {
+              setLoading(false);
+              onSuccess && onSuccess();
+            } else {
+              setError("Payment verification failed. Please contact support.");
+              setLoading(false);
+            }
+          } catch (err) {
+            setError("Payment verification failed. Please try again.");
+            setLoading(false);
+          }
+        },
+        prefill: {
+          name: user?.name || "",
+          email: user?.email || "",
+          contact: user?.phone || ""
+        },
+        theme: { color: "#22c55e" }
+      };
+      const rzp = new window.Razorpay(options);
+      rzp.on('payment.failed', function (response){
+        setError("Payment failed. Please try again.");
+        setLoading(false);
+      });
+      rzp.open();
+      setLoading(false);
+    } catch (err) {
+      setError("Payment initiation failed. Please try again.");
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="payment-container">
@@ -20,37 +107,23 @@ export default function Payment({ onSuccess, scannerImageSrc }) {
       </div>
 
       <p style={{ margin: '20px 0', fontSize: '16px', color: '#374151' }}>
-        <strong>UPI Payment</strong>
+        <strong>UPI/Card/Netbanking</strong>
       </p>
 
       <p style={{ margin: '10px 0', fontSize: '14px', color: '#6B7280' }}>
-        Scan QR or pay to:
+        Pay securely using Razorpay
       </p>
 
-      <p
-        style={{
-          margin: '15px 0',
-          padding: '15px',
-          background: '#F3F4F6',
-          borderRadius: '10px',
-          fontSize: '18px',
-          fontWeight: '600',
-          color: '#4F46E5'
-        }}
-      >
-        📱 8310549462@ybl
-      </p>
-
-      <p style={{ margin: '15px 0', fontSize: '13px', color: '#9CA3AF' }}>
-        After payment, click the button below to confirm
-      </p>
+      {error && <div style={{ color: 'red', margin: '10px 0' }}>{error}</div>}
+      {loading && <div style={{ color: '#22c55e', margin: '10px 0' }}>Processing payment...</div>}
 
       <button
-        onClick={onSuccess}
+        onClick={handleRazorpayPayment}
         className="btn btn-success"
         style={{ width: '100%', marginTop: '20px' }}
+        disabled={loading}
       >
-        ✅ Payment Done - Confirm
+        {loading ? 'Processing...' : 'Pay Now'}
       </button>
     </div>
   );

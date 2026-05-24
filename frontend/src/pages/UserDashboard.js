@@ -1,3 +1,249 @@
+  // Real-time event handlers
+  useEffect(() => {
+    const socket = getSocket();
+    // Booking confirmed
+    socket.on("bookingConfirmed", ({ bookingId, paymentId, status }) => {
+      loadBookings();
+      addToast("Booking confirmed!", "success");
+      setShowPayment(false);
+    });
+    // Payment success
+    socket.on("paymentSuccess", ({ bookingId, paymentId, amount }) => {
+      loadBookings();
+      addToast("Payment successful!", "success");
+      setShowPayment(false);
+    });
+    // Wallet updated
+    socket.on("walletUpdated", ({ amount }) => {
+      fetchWallet();
+      addToast("Wallet updated!", "success");
+      setShowWalletTopup(false);
+    });
+    // Provider assigned
+    socket.on("providerAssigned", ({ bookingId }) => {
+      loadBookings();
+      addToast("Provider assigned!", "info");
+    });
+    // Payment failed
+    socket.on("paymentFailed", ({ bookingId, paymentId }) => {
+      addToast("Payment failed. Please retry.", "error");
+      setShowPayment(true);
+    });
+    // Payment refunded
+    socket.on("paymentRefunded", ({ paymentId }) => {
+      addToast("Payment refunded.", "info");
+      loadBookings();
+    });
+    return () => {
+      socket.off("bookingConfirmed");
+      socket.off("paymentSuccess");
+      socket.off("walletUpdated");
+      socket.off("providerAssigned");
+      socket.off("paymentFailed");
+      socket.off("paymentRefunded");
+    };
+  }, []);
+  // Payment recovery and skeleton loading
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [paymentError, setPaymentError] = useState("");
+  const retryPayment = () => {
+    setPaymentError("");
+    setShowPayment(true);
+  };
+      {/* Payment loader and retry UI */}
+      {paymentLoading && (
+        <div className="payment-loader-overlay">
+          <div className="loader-spinner" />
+          <p>Verifying payment...</p>
+        </div>
+      )}
+      {paymentError && (
+        <div className="payment-error-bar">
+          <span>{paymentError}</span>
+          <button onClick={retryPayment}>Retry Payment</button>
+        </div>
+      )}
+import PaymentPage from "./PaymentPage";
+import { useRef } from "react";
+  // Wallet state
+  const [showWalletTopup, setShowWalletTopup] = useState(false);
+  const [walletAmount, setWalletAmount] = useState(0);
+  const [walletLoading, setWalletLoading] = useState(false);
+  const [walletError, setWalletError] = useState("");
+  const [walletHistory, setWalletHistory] = useState([]);
+  const [walletBalance, setWalletBalance] = useState(0);
+  const walletUser = user;
+
+  // Fetch wallet balance and history
+  const fetchWallet = async () => {
+    try {
+      setWalletLoading(true);
+      const res = await api.get("/payment/history");
+      setWalletHistory(res.data.payments?.filter(p => p.transactionType === "topup") || []);
+      // Assume backend returns wallet balance in user object or recalculate
+      setWalletBalance(res.data.wallet || user?.wallet || 0);
+    } catch (err) {
+      setWalletError("Failed to load wallet");
+    } finally {
+      setWalletLoading(false);
+    }
+  };
+
+  // Show wallet top-up modal
+  const openWalletTopup = () => {
+    setWalletAmount(0);
+    setShowWalletTopup(true);
+    fetchWallet();
+  };
+
+  // Handle wallet top-up payment
+  const handleWalletTopup = async () => {
+    setWalletError("");
+    setWalletLoading(true);
+    try {
+      // Create Razorpay order for wallet
+      const orderRes = await api.post("/payment/create-order", {
+        amount: walletAmount,
+        currency: "INR",
+        notes: { userId: user?._id || user?.id, type: "wallet" }
+      });
+      const order = orderRes.data.order;
+      if (!order || !order.id) throw new Error("Order creation failed");
+      const key = import.meta.env.VITE_RAZORPAY_KEY_ID;
+      const options = {
+        key,
+        amount: order.amount,
+        currency: order.currency,
+        name: "FastAid Wallet Top-up",
+        description: "Wallet Recharge",
+        order_id: order.id,
+        handler: async function (response) {
+          try {
+            setWalletLoading(true);
+            await api.post("/payment/verify-payment", {
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+              type: "wallet"
+            });
+            setWalletLoading(false);
+            setShowWalletTopup(false);
+            fetchWallet();
+            addToast("Wallet top-up successful!", "success");
+          } catch (err) {
+            setWalletError("Wallet verification failed. Try again.");
+            setWalletLoading(false);
+          }
+        },
+        prefill: {
+          name: user?.name || "",
+          email: user?.email || "",
+          contact: user?.phone || ""
+        },
+        theme: { color: "#22c55e" }
+      };
+      const ok = await new Promise((resolve) => {
+        if (window.Razorpay) return resolve(true);
+        const script = document.createElement("script");
+        script.src = "https://checkout.razorpay.com/v1/checkout.js";
+        script.onload = () => resolve(true);
+        script.onerror = () => resolve(false);
+        document.body.appendChild(script);
+      });
+      if (!ok) {
+        setWalletError("Failed to load Razorpay. Try again later.");
+        setWalletLoading(false);
+        return;
+      }
+      const rzp = new window.Razorpay(options);
+      rzp.on('payment.failed', function () {
+        setWalletError("Wallet payment failed. Try again.");
+        setWalletLoading(false);
+      });
+      rzp.open();
+      setWalletLoading(false);
+    } catch (err) {
+      setWalletError("Wallet payment failed. Try again.");
+      setWalletLoading(false);
+    }
+  };
+  // PaymentPage integration for booking
+  const handleRazorpayBookingSuccess = () => {
+    setShowPayment(false);
+    // Refresh bookings and show success UI
+    loadBookings();
+    addToast("Payment successful! Booking confirmed.", "success");
+    // Optionally, redirect to success page or show animation
+  };
+  // Wallet Top-up Modal
+  {showWalletTopup && (
+    <div className="payment-modal">
+      <div className="payment-content modern-payment">
+        <h3>Wallet Top-up</h3>
+        <div className="wallet-balance-card">
+          <span>Current Balance</span>
+          <strong>₹{walletBalance}</strong>
+        </div>
+        <div className="wallet-topup-inputs">
+          <div className="predefined-chips">
+            {[100, 200, 500, 1000].map((amt) => (
+              <button key={amt} className={walletAmount === amt ? "chip active" : "chip"} onClick={() => setWalletAmount(amt)}>+₹{amt}</button>
+            ))}
+          </div>
+          <input
+            type="number"
+            min={1}
+            className="form-input"
+            placeholder="Enter amount"
+            value={walletAmount}
+            onChange={e => setWalletAmount(Number(e.target.value))}
+            style={{ marginTop: 12, width: "100%" }}
+          />
+        </div>
+        {walletError && <div style={{ color: 'red', margin: '10px 0' }}>{walletError}</div>}
+        <div className="payment-buttons">
+          <button className="pay-btn" onClick={handleWalletTopup} disabled={walletLoading || !walletAmount || walletAmount < 1}>
+            {walletLoading ? "Processing..." : "Add Money"}
+          </button>
+          <button className="close-btn" onClick={() => setShowWalletTopup(false)}>
+            Close
+          </button>
+        </div>
+        <div className="wallet-history-section">
+          <h4>Wallet Transactions</h4>
+          {walletLoading ? <div>Loading...</div> : (
+            <table className="wallet-history-table">
+              <thead>
+                <tr>
+                  <th>Amount</th>
+                  <th>Status</th>
+                  <th>Method</th>
+                  <th>Date</th>
+                  <th>Payment ID</th>
+                </tr>
+              </thead>
+              <tbody>
+                {walletHistory.map((txn, idx) => (
+                  <tr key={idx}>
+                    <td>₹{txn.amount}</td>
+                    <td>{txn.status}</td>
+                    <td>{txn.paymentMethod || '-'}</td>
+                    <td>{new Date(txn.createdAt).toLocaleString()}</td>
+                    <td>{txn.razorpay_payment_id || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  )}
+      {/* Wallet Top-up Button (example placement, adjust as needed) */}
+      <div className="wallet-balance-bar">
+        <span>Wallet: ₹{walletBalance}</span>
+        <button className="wallet-topup-btn" onClick={openWalletTopup}>Add Money</button>
+      </div>
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../api";
@@ -894,445 +1140,12 @@ export default function UserDashboard() {
       {showPayment && (
         <div className="payment-modal">
           <div className="payment-content modern-payment">
-            <h3 className="payment-title">{isCartCheckout ? "Cart Checkout" : `Pay for: ${selectedService?.name || 'Service'}`}</h3>
-            <p className="modal-subtitle">Secure payment — choose a method below to complete your order</p>
-            {!showQR ? (
-              <>
-                <div className="payment-grid">
-                  <aside className="payment-side summary-side">
-                    <div className="payment-summary-card">
-                      <div className="summary-top">
-                        <div className="service-chip">{getServiceIcon(selectedService?.name)}</div>
-                        <div>
-                          <span className="summary-tag">{isCartCheckout ? "Cart Checkout" : "Order Summary"}</span>
-                          <h4>{isCartCheckout ? `${cart.items.length} services selected` : selectedService?.name || "Service details"}</h4>
-                          <p>{isCartCheckout ? "Confirm your cart items before checkout." : selectedService?.description || "Fast booking with secure payment."}</p>
-                        </div>
-                      </div>
-
-                      <div className="summary-items">
-                        {isCartCheckout ? (
-                          cart.items.map((item) => (
-                            <div key={item._id} className="summary-line">
-                              <span>{item.serviceName} × {item.quantity}</span>
-                              <strong>₹{item.price * item.quantity}</strong>
-                            </div>
-                          ))
-                        ) : (
-                          <>
-                            <div className="summary-line">
-                              <span>Base price</span>
-                              <strong>₹{Number(selectedService?.basePrice || predictedPrice || 0).toFixed(2)}</strong>
-                            </div>
-                            <div className="summary-line">
-                              <span>Suggested tip</span>
-                              <strong>₹{Number(suggestedTip || 0).toFixed(2)}</strong>
-                            </div>
-                          </>
-                        )}
-                      </div>
-
-                      <div className="summary-divider" />
-
-                      <div className="summary-total-row">
-                        <span>Total</span>
-                        <strong>₹{isCartCheckout ? (cart.total || 0) : Number(predictedPrice || selectedService?.basePrice || 0) + Number(bookingTip || 0)}</strong>
-                      </div>
-                    </div>
-
-                    <div className="payment-card coupon-card">
-                      <div className="card-header">
-                        <span>Promo code</span>
-                        <small>Apply instantly</small>
-                      </div>
-                      <input
-                        type="text"
-                        className="promo-input"
-                        placeholder="Enter code"
-                        value={couponCode}
-                        onChange={(e) => setCouponCode(e.target.value)}
-                      />
-                    </div>
-
-                    <div className="payment-card trust-card">
-                      <div className="trust-icon">🔒</div>
-                      <div>
-                        <strong>Secure checkout</strong>
-                        <p>256-bit encryption, trusted by thousands of customers.</p>
-                      </div>
-                    </div>
-                  </aside>
-
-                  <section className="payment-side form-side">
-                    <div className="address-panel section-card">
-                      <div className="section-header">
-                        <span className="section-label">Delivery address</span>
-                        <p className="section-description">Choose an existing address or add a new delivery location.</p>
-                      </div>
-                      {savedAddresses.length > 0 && (
-                        <div className="address-cards">
-                          {savedAddresses.map((addr) => (
-                            <button
-                              key={addr.id}
-                              type="button"
-                              className={`address-card ${selectedAddressId === addr.id ? "selected" : ""}`}
-                              onClick={() => handleSelectAddress(addr.id)}
-                            >
-                              <div className="address-card-icon">🏠</div>
-                              <div>
-                                <p className="address-card-title">{addr.label}</p>
-                                <p className="address-card-copy">{addr.fullAddress}</p>
-                              </div>
-                              <span className="address-badge">{selectedAddressId === addr.id ? "Selected" : "Select"}</span>
-                            </button>
-                          ))}
-                          <button
-                            type="button"
-                            className={`address-card add-new ${isAddingAddress ? "selected" : ""}`}
-                            onClick={() => {
-                              setIsAddingAddress(true);
-                              setSelectedAddressId(null);
-                              setNewAddressLabel("Home");
-                            }}
-                          >
-                            <div className="address-card-icon">+</div>
-                            <div>
-                              <p className="address-card-title">Add new address</p>
-                              <p className="address-card-copy">Create a new delivery location</p>
-                            </div>
-                          </button>
-                        </div>
-                      )}
-
-                      {(!savedAddresses.length || isAddingAddress) && (
-                        <div className="new-address-panel">
-                          <div className="section-header">
-                            <span className="section-label">Enter delivery location</span>
-                            <p className="section-description">Search for your address or use the picker to set it precisely.</p>
-                          </div>
-                          <LocationPickerLeaflet
-                            value={location}
-                            onChange={(val) => {
-                              setLocation(typeof val === "string" ? val : val.display || location);
-                              setCoordinates(null);
-                            }}
-                            onAddressSelect={(details) => {
-                              setAddressDetails(details);
-                              setCoordinates(details.coordinates || null);
-                              setLocation(`${details.street || ""} ${details.city || ""} ${details.state || ""}`.trim() || details.fullAddress || location);
-                            }}
-                            coordinates={coordinates}
-                            onCoordinatesChange={(coords) => {
-                              setCoordinates(coords);
-                            }}
-                            placeholder="Enter your street, city or area"
-                            maxSuggestions={8}
-                          />
-                          <div className="form-group">
-                            <label className="form-label">Address label</label>
-                            <input
-                              type="text"
-                              className="form-input"
-                              placeholder="Home, Work, Office"
-                              value={newAddressLabel}
-                              onChange={(e) => setNewAddressLabel(e.target.value)}
-                            />
-                          </div>
-                          <div className="payment-buttons">
-                            <button className="pay-btn" type="button" onClick={handleSaveAddress}>
-                              Save address
-                            </button>
-                            <button className="close-btn" type="button" onClick={() => setIsAddingAddress(false)}>
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <div className="payment-step-pill">
-                      <span className="step active">1</span>
-                      <span className="step-text">Choose payment</span>
-                    </div>
-
-                    <div className="payment-section">
-                      <div className="section-header">
-                        <span className="section-label">Payment method</span>
-                        <p className="section-description">Tap a method to continue with a fast checkout flow.</p>
-                      </div>
-                      <div className="payment-method-grid">
-                        {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length > 0 && (
-                          <button type="button" className={`method-card ${paymentMethod === "upi" ? "active" : ""}`} onClick={() => setPaymentMethod("upi")}>UPI</button>
-                        )}
-                        {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length > 0 && (
-                          <button type="button" className={`method-card ${paymentMethod === "qr" ? "active" : ""}`} onClick={() => setPaymentMethod("qr")}>QR Code</button>
-                        )}
-                        {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length > 0 && (
-                          <button type="button" className={`method-card ${paymentMethod === "bank" ? "active" : ""}`} onClick={() => setPaymentMethod("bank")}>Net Banking</button>
-                        )}
-                        {paymentMethods.cardSupported && (
-                          <button type="button" className={`method-card ${paymentMethod === "card" ? "active" : ""}`} onClick={() => setPaymentMethod("card")}>Card</button>
-                        )}
-                        <button type="button" className={`method-card ${paymentMethod === "manual" ? "active" : ""}`} onClick={() => setPaymentMethod("manual")}>Manual</button>
-                        {paymentMethods.codSupported && (
-                          <button type="button" className={`method-card ${paymentMethod === "cod" ? "active" : ""}`} onClick={() => setPaymentMethod("cod")}>Cash</button>
-                        )}
-                        <button type="button" className={`method-card ${paymentMethod === "wallet" ? "active" : ""}`} onClick={() => setPaymentMethod("wallet")}>Wallet</button>
-                      </div>
-                    </div>
-
-                    {selectedAddress && (
-                      <div className="payment-section section-card">
-                        <div className="section-header">
-                          <span className="section-label">Selected delivery address</span>
-                          <p className="section-description">This address will be used to assign the nearest provider and confirm your booking.</p>
-                        </div>
-                        <div className="summary-items">
-                          <div className="detail-row">
-                            <span>Delivery address</span>
-                            <strong>{selectedAddress.fullAddress}</strong>
-                          </div>
-                          {selectedAddress.label && (
-                            <div className="detail-row">
-                              <span>Address label</span>
-                              <strong>{selectedAddress.label}</strong>
-                            </div>
-                          )}
-                        </div>
-                        <div className="payment-buttons">
-                          <button className="close-btn" type="button" onClick={() => setIsAddingAddress(true)}>
-                            Change address
-                          </button>
-                          <button className="pay-btn" type="button" onClick={() => setIsAddingAddress(true)}>
-                            Edit / add address
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="payment-section payment-method-details">
-                      {paymentMethod === "upi" && (
-                        <>
-                          <h4 className="detail-title">UPI IDs</h4>
-                          <p className="detail-copy">Scan or copy any of these UPI handles to complete payment.</p>
-                          {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length ? paymentMethods.upiIds.filter((m) => m.enabled !== false).map((upi, index) => (
-                            <div key={index} className="detail-row"><span>{upi.label || "UPI"}</span><strong>{upi.value}</strong></div>
-                          )) : <p className="note-text">No UPI IDs configured.</p>}
-                        </>
-                      )}
-
-                      {paymentMethod === "qr" && (
-                        <>
-                          <h4 className="detail-title">Scan QR Code</h4>
-                          <p className="detail-copy">Use your payment app to scan one of the QR codes below.</p>
-                          {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length ? (
-                            <div className="payment-qr-list">
-                              {paymentMethods.qrCodes.filter((m) => m.enabled !== false).map((qr, index) => (
-                                <div key={index} className="payment-qr-card modern-qr-card">
-                                  <img src={`${API_BASE_URL}${qr.url}`} alt={qr.label} className="payment-qr-image" />
-                                  <strong>{qr.label}</strong>
-                                </div>
-                              ))}
-                            </div>
-                          ) : <p className="note-text">No QR codes configured.</p>}
-                        </>
-                      )}
-
-                      {paymentMethod === "bank" && (
-                        <>
-                          <h4 className="detail-title">Bank Transfer</h4>
-                          <p className="detail-copy">Transfer funds and add the transaction ID below.</p>
-                          {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length ? paymentMethods.bankAccounts.filter((m) => m.enabled !== false).map((bank, index) => (
-                            <div key={index} className="detail-row"><span>{bank.bankName}</span><strong>{bank.accountName} / {bank.ifsc}</strong></div>
-                          )) : <p className="note-text">No bank details configured.</p>}
-                        </>
-                      )}
-
-                      {paymentMethod === "card" && (
-                        <>
-                          <h4 className="detail-title">Card Payment</h4>
-                          <p className="detail-copy">Proceed with your card details and enter the reference once complete.</p>
-                        </>
-                      )}
-
-                      {paymentMethod === "manual" && (
-                        <>
-                          <h4 className="detail-title">Manual Payment</h4>
-                          <p className="detail-copy">Upload proof of payment and wait while admin reviews the request.</p>
-                        </>
-                      )}
-
-                      {paymentMethod === "cod" && (
-                        <>
-                          <h4 className="detail-title">Cash on Delivery</h4>
-                          <p className="detail-copy">Pay the provider in cash after the service is completed.</p>
-                        </>
-                      )}
-
-                      {paymentMethod === "wallet" && (
-                        <>
-                          <h4 className="detail-title">Wallet Checkout</h4>
-                          <p className="detail-copy">Your wallet balance will be used automatically if available.</p>
-                        </>
-                      )}
-                    </div>
-
-                    {(paymentMethod === "manual" || paymentMethod === "bank" || paymentMethod === "card") && (
-                      <>
-                        <div className="form-group">
-                          <label className="form-label">Transaction / Reference ID</label>
-                          <input
-                            type="text"
-                            className="form-input"
-                            placeholder="Enter transaction ID or reference"
-                            value={transactionId}
-                            onChange={(e) => setTransactionId(e.target.value)}
-                          />
-                        </div>
-                        <div className="form-group">
-                          <label className="form-label">Payment Notes</label>
-                          <textarea
-                            className="form-input"
-                            placeholder="Enter details for admin review (optional)"
-                            value={paymentNote}
-                            onChange={(e) => setPaymentNote(e.target.value)}
-                            rows={3}
-                          />
-                        </div>
-                        <div className="form-group">
-                          <label className="form-label">Upload payment screenshot (optional)</label>
-                          <input type="file" accept="image/*" onChange={(e) => setProofFile(e.target.files?.[0] || null)} />
-                          {proofFile && (
-                            <div className="proof-preview-row">
-                              <small>{proofFile.name}</small>
-                              <button className="btn btn-danger btn-small" style={{ marginLeft: 8 }} onClick={() => { setProofFile(null); setProofUrl(""); }}>
-                                Remove
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </>
-                    )}
-
-                    <div className="payment-buttons">
-                      <button
-                        className="pay-btn"
-                        onClick={async () => {
-                          try {
-                            await requestCurrentLocation();
-                            // upload proof first if present
-                            if (proofFile && !proofUrl) {
-                              const fd = new FormData();
-                              fd.append("proof", proofFile);
-                              try {
-                                const resp = await api.post("/payments/upload-proof", fd, { headers: { "Content-Type": "multipart/form-data" } });
-                                setProofUrl(resp.data.url || resp.data?.url || "");
-                              } catch (err) {
-                                console.error("Proof upload failed", err);
-                                addToast("Could not upload proof image", "error");
-                                return;
-                              }
-                            }
-
-                            if (paymentMethod === "qr") {
-                              setShowQR(true);
-                              return;
-                            }
-
-                            await handlePaymentSuccess();
-                          } catch (err) {
-                            console.error("Payment process halted:", err);
-                          }
-                        }}
-                        disabled={gpsLoading}
-                      >
-                        {gpsLoading ? "Locating..." : paymentMethod === "wallet" ? "Pay with Wallet" : paymentMethod === "cod" ? "Confirm Cash" : "Continue to Pay"}
-                      </button>
-                      <button className="close-btn" onClick={() => {
-                        setShowPayment(false);
-                        setSelectedService(null);
-                        setIsCartCheckout(false);
-                        setLocation("");
-                        setShowQR(false);
-                      }}>
-                        Close
-                      </button>
-                    </div>
-                  </section>
-                </div>
-                <div className="mobile-payment-bar">
-                  <div>
-                    <span className="mobile-pay-label">Total</span>
-                    <strong>₹{isCartCheckout ? (cart.total || 0) : Number(predictedPrice || selectedService?.basePrice || 0) + Number(bookingTip || 0)}</strong>
-                  </div>
-                  <button
-                    className="pay-btn mobile-pay-action"
-                    onClick={async () => {
-                      try {
-                        await requestCurrentLocation();
-                        if (proofFile && !proofUrl) {
-                          const fd = new FormData();
-                          fd.append("proof", proofFile);
-                          try {
-                            const resp = await api.post("/payments/upload-proof", fd, { headers: { "Content-Type": "multipart/form-data" } });
-                            setProofUrl(resp.data.url || resp.data?.url || "");
-                          } catch (err) {
-                            console.error("Proof upload failed", err);
-                            addToast("Could not upload proof image", "error");
-                            return;
-                          }
-                        }
-                        if (paymentMethod === "qr") {
-                          setShowQR(true);
-                          return;
-                        }
-                        await handlePaymentSuccess();
-                      } catch (err) {
-                        console.error("Payment process halted:", err);
-                      }
-                    }}
-                    disabled={gpsLoading}
-                  >
-                    {gpsLoading ? "Locating..." : "Continue"}
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="payment-qr-list">
-                  {paymentMethods.qrCodes
-  ?.filter(
-    (q) => q.enabled !== false
-  )
-  ?.length ? (
-                    paymentMethods.qrCodes
-.filter(
-  (q) => q.enabled !== false
-)
-.map((qr, index) => (
-                      <div key={index} className="payment-qr-card">
-                        <img src={`${API_BASE_URL}${qr.url}`} alt={qr.label} className="payment-qr-image" />
-                        <p>{qr.label}</p>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="empty-state">
-                      <p>No QR codes are configured yet.</p>
-                    </div>
-                  )}
-                </div>
-                <p className="qr-help-text">
-                  Scan one of the merchant QR codes from your UPI app and confirm the payment.
-                </p>
-                <div className="payment-buttons">
-                  <button className="pay-btn" onClick={handlePaymentSuccess}>
-                    ✓ Payment Done
-                  </button>
-                  <button className="close-btn" onClick={() => setShowQR(false)}>
-                    Back
-                  </button>
-                </div>
-              </>
-            )}
+            <PaymentPage
+              onSuccess={handleRazorpayBookingSuccess}
+              amount={Number(predictedPrice || selectedService?.basePrice || 0) + Number(bookingTip || 0)}
+              bookingId={selectedService?._id}
+              user={user}
+            />
           </div>
         </div>
       )}

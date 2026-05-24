@@ -69,6 +69,9 @@ app.use(cors({
   credentials: true
 }));
 
+
+// Razorpay webhook must use express.raw() before express.json()
+app.use("/api/payment/webhook", express.raw({ type: "application/json" }));
 app.use(express.json());
 
 app.use(express.urlencoded({
@@ -131,10 +134,11 @@ app.use(
   require("./routes/cartRoutes")
 );
 
-app.use(
-  "/api/payments",
-  require("./routes/paymentRoutes")
-);
+
+// New Razorpay payment routes (production)
+app.use("/api/payment", require("./routes/paymentRoutes"));
+// Legacy/manual payment routes (backward compatibility)
+app.use("/api/payments", require("./routes/paymentRoutes"));
 
 app.use(
   "/api/admin-payments",

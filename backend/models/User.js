@@ -68,4 +68,9 @@ const userSchema = new mongoose.Schema({
 
 userSchema.index({ location: "2dsphere" });
 
+// Add wallet balance for wallet top-up support
+userSchema.add({
+  wallet: { type: Number, default: 0 }
+});
+
 module.exports = mongoose.model("User", userSchema);

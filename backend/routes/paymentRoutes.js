@@ -1,4 +1,7 @@
-const router = require("express").Router();
+const express = require("express");
+const router = express.Router();
+const { verifyToken } = require("../utils/verifyToken");
+const paymentController = require("../controllers/paymentController");
 const { execFile } = require("child_process");
 const path = require("path");
 const multer = require("multer");
@@ -6,7 +9,12 @@ const fs = require("fs");
 const Payment = require("../models/Payment");
 const Booking = require("../models/Booking");
 const User = require("../models/User");
-const { verifyToken } = require("../utils/verifyToken");
+// --- Razorpay Production Endpoints ---
+router.post("/create-order", verifyToken, paymentController.createOrder);
+router.post("/verify-payment", verifyToken, paymentController.verifyPayment);
+router.post("/wallet-topup", verifyToken, paymentController.walletTopup);
+router.get("/history", verifyToken, paymentController.paymentHistory);
+// Webhook route will be mounted with express.raw() in server.js
 
 // setup uploads for payment proofs
 const uploadDir = path.join(__dirname, "..", "uploads", "payments");
