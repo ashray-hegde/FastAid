@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import api from "../api";
 import ToastContainer from "../components/ToastContainer";
 import { useToast } from "../context/ToastContext";
+import PaymentPage from "./PaymentPage";
 
 export default function ProfilePage() {
   const { addToast } = useToast();
@@ -24,19 +25,19 @@ export default function ProfilePage() {
     state: "",
     postalCode: ""
   });
-  const [paymentMethods, setPaymentMethods] = useState({ upiIds: [], qrCodes: [], bankAccounts: [], cardSupported: true });
-  const [walletTopupAmount, setWalletTopupAmount] = useState("");
-  const [walletTopupMethod, setWalletTopupMethod] = useState("bank");
-  const [walletTopupTransactionId, setWalletTopupTransactionId] = useState("");
-  const [walletTopupNote, setWalletTopupNote] = useState("");
-  const [walletTopupProofFile, setWalletTopupProofFile] = useState(null);
-  const [walletTopupLoading, setWalletTopupLoading] = useState(false);
+
+  // Wallet payment state
   const [showWalletTopup, setShowWalletTopup] = useState(false);
+  const [walletAmount, setWalletAmount] = useState(0);
+  const [walletError, setWalletError] = useState("");
+  const [currentPaymentType, setCurrentPaymentType] = useState("booking");
+  const [showPayment, setShowPayment] = useState(false);
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [walletBalance, setWalletBalance] = useState(0);
 
   useEffect(() => {
     fetchProfile();
     fetchAddresses();
-    loadPaymentMethods();
   }, []);
 
   const fetchProfile = async () => {
@@ -65,54 +66,6 @@ export default function ProfilePage() {
       }
     } catch (err) {
       console.error("Failed to fetch addresses");
-    }
-  };
-
-  const loadPaymentMethods = async () => {
-    try {
-      const res = await api.get("/payments/methods");
-      setPaymentMethods(res.data || { upiIds: [], qrCodes: [], bankAccounts: [], cardSupported: true });
-    } catch (err) {
-      console.error("Failed to load payment methods");
-    }
-  };
-
-  const uploadWalletProof = async () => {
-    if (!walletTopupProofFile) return "";
-    const formData = new FormData();
-    formData.append("proof", walletTopupProofFile);
-    const res = await api.post("/payments/upload-proof", formData, {
-      headers: { "Content-Type": "multipart/form-data" }
-    });
-    return res.data?.url || "";
-  };
-
-  const handleWalletTopup = async () => {
-    if (!walletTopupAmount || Number(walletTopupAmount) <= 0) {
-      addToast("Enter a valid top-up amount", "error");
-      return;
-    }
-
-    try {
-      setWalletTopupLoading(true);
-      const proofUrl = walletTopupProofFile ? await uploadWalletProof() : "";
-      await api.post("/payments/wallet-topup", {
-        amount: walletTopupAmount,
-        method: walletTopupMethod,
-        transactionId: walletTopupTransactionId,
-        transactionNote: walletTopupNote,
-        proofUrl
-      });
-      addToast("Wallet top-up request submitted. Waiting for admin approval.", "success");
-      setWalletTopupAmount("");
-      setWalletTopupMethod("bank");
-      setWalletTopupTransactionId("");
-      setWalletTopupNote("");
-      setWalletTopupProofFile(null);
-    } catch (err) {
-      addToast(err.response?.data?.error || "Failed to submit wallet top-up", "error");
-    } finally {
-      setWalletTopupLoading(false);
     }
   };
 
@@ -195,6 +148,41 @@ export default function ProfilePage() {
       postalCode: addr.postalCode || ""
     });
     setEditingAddressId(id);
+  };
+
+  // Wallet payment functions
+  const fetchWallet = async () => {
+    try {
+      const res = await api.get("/payment/wallet-balance");
+      setWalletBalance(res.data.wallet || 0);
+    } catch (err) {
+      if (err.response?.status !== 401) {
+        setWalletError("Failed to fetch wallet");
+      }
+    }
+  };
+
+  const openWalletTopup = () => {
+    setWalletAmount(0);
+    setWalletError("");
+    setShowWalletTopup(true);
+    fetchWallet();
+  };
+
+  const handleRazorpayWalletSuccess = () => {
+    setShowPayment(false);
+    setShowWalletTopup(false); // Close wallet modal too
+    setCurrentPaymentType("booking"); // Reset payment type
+    setWalletAmount(0);
+    setWalletError("");
+    fetchWallet();
+    addToast("✅ Wallet topped up successfully!", "success");
+  };
+
+  const handlePaymentSuccess = async () => {
+    if (currentPaymentType === "wallet") {
+      handleRazorpayWalletSuccess();
+    }
   };
 
   if (loading && !user) {
@@ -337,142 +325,21 @@ export default function ProfilePage() {
           </div>
 
           {user?.role === "user" && (
-            <div className="wallet-topup-card">
-              <div className="wallet-topup-header">
+            <div className="wallet-section" style={{ backgroundColor: '#f0fdf4', padding: '20px', borderRadius: '8px', border: '1px solid #dcfce7', marginTop: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                  <h3>Wallet Top-up</h3>
-                  <p>Top up your wallet to book faster. Open the form, enter payment details, and attach proof for review.</p>
+                  <h3 style={{ margin: '0 0 8px 0', color: '#22c55e' }}>💳 Wallet Balance</h3>
+                  <p style={{ margin: '0 0 12px 0', color: '#666', fontSize: '14px' }}>Use Razorpay to instantly add funds to your wallet and book services faster.</p>
+                  <div style={{ fontSize: '28px', fontWeight: 'bold', color: '#22c55e' }}>₹{user?.wallet || user?.walletBalance || 0}</div>
                 </div>
                 <button
-                  className="btn btn-primary btn-small"
-                  onClick={() => setShowWalletTopup((prev) => !prev)}
+                  onClick={openWalletTopup}
+                  className="btn btn-primary"
+                  style={{ padding: '12px 24px', color: 'white', cursor: 'pointer', border: 'none' }}
                 >
-                  {showWalletTopup ? "Hide top-up" : "Top up wallet"}
+                  Add Money
                 </button>
               </div>
-
-              {!showWalletTopup ? (
-                <div className="wallet-topup-summary">
-                  <p>Use your preferred transfer method and request wallet credit when you need it. No form is shown until you click the button above.</p>
-                </div>
-              ) : (
-                <div className="wallet-topup-form">
-                  <div className="form-row">
-                    <div className="form-group">
-                      <label className="form-label">Top-up Amount</label>
-                      <input
-                        type="number"
-                        min="1"
-                        className="form-input"
-                        placeholder="Enter amount"
-                        value={walletTopupAmount}
-                        onChange={(e) => setWalletTopupAmount(e.target.value)}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">Payment Method</label>
-                      <select
-                        value={walletTopupMethod}
-                        onChange={(e) => setWalletTopupMethod(e.target.value)}
-                        className="form-select"
-                      >
-                        {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length > 0 && <option value="upi">UPI</option>}
-                        {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length > 0 && <option value="qr">QR Code</option>}
-                        {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length > 0 && <option value="bank">Bank Transfer</option>}
-                        {paymentMethods.cardSupported && <option value="card">Credit/Debit Card</option>}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="wallet-topup-method-info">
-                    {walletTopupMethod === "upi" && (
-                      <div className="payment-source">
-                        <h4>UPI options</h4>
-                        {paymentMethods.upiIds?.filter((m) => m.enabled !== false).length ? paymentMethods.upiIds.filter((m) => m.enabled !== false).map((upi, index) => (
-                          <p key={index}>{upi.label || "UPI"}: <strong>{upi.value}</strong></p>
-                        )) : <p>No UPI IDs are configured yet.</p>}
-                      </div>
-                    )}
-                    {walletTopupMethod === "qr" && (
-                      <div className="payment-source">
-                        <h4>Scan QR</h4>
-                        <div className="payment-qr-grid">
-                          {paymentMethods.qrCodes?.filter((m) => m.enabled !== false).length ? paymentMethods.qrCodes.filter((m) => m.enabled !== false).map((qr, index) => (
-                            <div key={index} className="payment-qr-card">
-                              <img src={`${process.env.REACT_APP_API_BASE_URL || ""}${qr.url}`} alt={qr.label} className="payment-qr-image" />
-                              <strong>{qr.label}</strong>
-                            </div>
-                          )) : <p>No QR codes are configured yet.</p>}
-                        </div>
-                      </div>
-                    )}
-                    {walletTopupMethod === "bank" && (
-                      <div className="payment-source">
-                        <h4>Bank transfer</h4>
-                        {paymentMethods.bankAccounts?.filter((m) => m.enabled !== false).length ? paymentMethods.bankAccounts.filter((m) => m.enabled !== false).map((bank, index) => (
-                          <p key={index}>{bank.bankName}: <strong>{bank.accountName}</strong> / {bank.ifsc}</p>
-                        )) : <p>No bank details are configured yet.</p>}
-                      </div>
-                    )}
-                    {walletTopupMethod === "card" && (
-                      <div className="payment-source">
-                        <h4>Card payment</h4>
-                        <p>Use your credit or debit card details when sending the transfer instruction. Attach a receipt if available.</p>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Transaction / Reference ID</label>
-                    <input
-                      type="text"
-                      className="form-input"
-                      value={walletTopupTransactionId}
-                      onChange={(e) => setWalletTopupTransactionId(e.target.value)}
-                      placeholder="Enter reference or auth ID"
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Notes for Admin</label>
-                    <textarea
-                      className="form-input"
-                      rows="3"
-                      value={walletTopupNote}
-                      onChange={(e) => setWalletTopupNote(e.target.value)}
-                      placeholder="Add any details for admin review"
-                    />
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Upload Proof (optional)</label>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) => setWalletTopupProofFile(e.target.files?.[0] || null)}
-                    />
-                    {walletTopupProofFile && (
-                      <div className="proof-preview-row">
-                        <small>{walletTopupProofFile.name}</small>
-                        <button
-                          className="btn btn-danger btn-small"
-                          onClick={() => setWalletTopupProofFile(null)}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  <button
-                    className="btn btn-secondary"
-                    onClick={handleWalletTopup}
-                    disabled={walletTopupLoading}
-                  >
-                    {walletTopupLoading ? "Submitting..." : "Request Top-up"}
-                  </button>
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -606,6 +473,171 @@ export default function ProfilePage() {
                   <div className="empty-state-icon">📍</div>
                   <h3>No saved addresses</h3>
                   <p>Add a delivery address to get started</p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Wallet top-up modal - Simple Razorpay flow */}
+        {showWalletTopup && !showPayment && (
+          <div className="payment-modal">
+            <div className="payment-content modern-payment">
+              <button
+                className="btn btn-secondary close-payment-btn"
+                style={{ position: 'absolute', top: 16, right: 16, zIndex: 10 }}
+                onClick={() => {
+                  setShowWalletTopup(false);
+                  setWalletAmount(0);
+                  setWalletError("");
+                }}
+              >
+                ✕ Close
+              </button>
+
+              <h3 style={{ marginBottom: '8px', color: '#111', fontSize: '22px', fontWeight: '700' }}>💳 Add Money</h3>
+              <p style={{ fontSize: '14px', color: '#666', marginBottom: '20px' }}>Current Balance: <strong style={{ color: '#22c55e', fontSize: '16px' }}>₹{walletBalance || 0}</strong></p>
+
+              {/* Amount Input */}
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '8px', color: '#111' }}>Enter Amount (₹)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="100000"
+                  placeholder="Enter amount (min ₹1, max ₹1,00,000)"
+                  value={walletAmount}
+                  onChange={(e) => {
+                    setWalletAmount(Number(e.target.value));
+                    setWalletError("");
+                  }}
+                  disabled={paymentLoading}
+                  style={{
+                    width: '100%',
+                    padding: '14px',
+                    borderRadius: '8px',
+                    border: walletError ? '2px solid #dc2626' : '1px solid #ddd',
+                    fontSize: '16px',
+                    fontWeight: '500',
+                    outline: 'none',
+                    transition: 'border 0.2s',
+                    opacity: paymentLoading ? 0.6 : 1
+                  }}
+                />
+              </div>
+
+              {/* Error Message */}
+              {walletError && (
+                <div style={{
+                  color: '#dc2626',
+                  padding: '12px',
+                  backgroundColor: '#fee2e2',
+                  borderRadius: '6px',
+                  border: '1px solid #fca5a5',
+                  fontSize: '13px',
+                  marginBottom: '16px',
+                  fontWeight: '500'
+                }}>
+                  ⚠️ {walletError}
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button
+                  onClick={() => {
+                    // Validate amount
+                    if (!walletAmount || walletAmount < 1) {
+                      setWalletError("Enter at least ₹1");
+                      return;
+                    }
+                    if (walletAmount > 100000) {
+                      setWalletError("Maximum ₹1,00,000 allowed");
+                      return;
+                    }
+                    
+                    // Start payment flow
+                    setWalletError("");
+                    setCurrentPaymentType("wallet");
+                    setShowWalletTopup(false);
+                    setShowPayment(true);
+                  }}
+                  disabled={paymentLoading || !walletAmount || walletAmount < 1 || walletAmount > 100000}
+                  style={{
+                    flex: 1,
+                    padding: '14px 20px',
+                    backgroundColor: (walletAmount && walletAmount >= 1 && walletAmount <= 100000 && !paymentLoading) ? '#22c55e' : '#ccc',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: (walletAmount && walletAmount >= 1 && walletAmount <= 100000 && !paymentLoading) ? 'pointer' : 'not-allowed',
+                    fontSize: '16px',
+                    fontWeight: '700',
+                    transition: 'all 0.2s',
+                    opacity: paymentLoading ? 0.7 : 1
+                  }}
+                >
+                  {paymentLoading ? '⏳ Processing...' : '💳 Add Money'}
+                </button>
+
+                <button
+                  onClick={() => {
+                    setShowWalletTopup(false);
+                    setWalletAmount(0);
+                    setWalletError("");
+                  }}
+                  disabled={paymentLoading}
+                  style={{
+                    flex: 1,
+                    padding: '14px 20px',
+                    backgroundColor: '#f3f4f6',
+                    color: '#111',
+                    border: '1px solid #ddd',
+                    borderRadius: '8px',
+                    cursor: paymentLoading ? 'not-allowed' : 'pointer',
+                    fontSize: '16px',
+                    fontWeight: '600',
+                    transition: 'all 0.2s',
+                    opacity: paymentLoading ? 0.6 : 1
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Payment Modal */}
+        {showPayment && (
+          <div className="payment-modal">
+            <div className="payment-content modern-payment">
+              <button
+                className="btn btn-secondary close-payment-btn"
+                style={{ position: 'absolute', top: 16, right: 16, zIndex: 10 }}
+                onClick={() => {
+                  setShowPayment(false);
+                  setCurrentPaymentType("booking");
+                }}
+              >
+                ✕ Close
+              </button>
+              <PaymentPage
+                onSuccess={handlePaymentSuccess}
+                onCancel={() => {
+                  setShowPayment(false);
+                  setCurrentPaymentType("booking");
+                }}
+                amount={walletAmount}
+                bookingId={""}
+                user={user}
+                paymentType={currentPaymentType}
+              />
+
+              {paymentLoading && (
+                <div className="payment-loader-overlay">
+                  <div className="loader-spinner" />
+                  <p>Verifying payment...</p>
                 </div>
               )}
             </div>

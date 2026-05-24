@@ -35,6 +35,7 @@ export default function UserDashboard() {
   const [coordinates, setCoordinates] = useState(null);
   const [isCartCheckout, setIsCartCheckout] = useState(false);
   const [showPayment, setShowPayment] = useState(false);
+  const [currentPaymentType, setCurrentPaymentType] = useState("booking"); // "booking" or "wallet"
 
   const [paymentMethod, setPaymentMethod] = useState("upi");
   const [couponCode, setCouponCode] = useState("");
@@ -219,7 +220,13 @@ export default function UserDashboard() {
       const res = await api.get("/payment/history");
       setWalletHistory(res.data.payments?.filter((p) => p.transactionType === "topup") || []);
       setWalletBalance(res.data.wallet || user?.wallet || 0);
+      setWalletError("");
     } catch (err) {
+      if (err.response?.status === 401) {
+        localStorage.removeItem("token");
+        window.location.replace("/login");
+        return;
+      }
       setWalletError("Failed to load wallet");
       console.error(err);
     } finally {
@@ -229,6 +236,7 @@ export default function UserDashboard() {
 
   const openWalletTopup = () => {
     setWalletAmount(0);
+    setWalletError("");
     setShowWalletTopup(true);
     fetchWallet();
   };
@@ -307,14 +315,27 @@ export default function UserDashboard() {
 
   const handleRazorpayBookingSuccess = () => {
     setShowPayment(false);
+    setCurrentPaymentType("booking"); // Reset payment type
     loadBookings();
     addToast("Payment successful! Booking confirmed.", "success");
   };
 
+  const handleRazorpayWalletSuccess = () => {
+    setShowPayment(false);
+    setShowWalletTopup(false); // Close wallet modal too
+    setCurrentPaymentType("booking"); // Reset payment type
+    setWalletAmount(0);
+    setWalletError("");
+    fetchWallet();
+    addToast("✅ Wallet topped up successfully!", "success");
+  };
+
   const handlePaymentSuccess = async () => {
-    // Intentionally keep behavior minimal & stable (PaymentPage already triggers success callback)
-    // If backend requires a separate call, it should be handled inside PaymentPage.
-    handleRazorpayBookingSuccess();
+    if (currentPaymentType === "wallet") {
+      handleRazorpayWalletSuccess();
+    } else {
+      handleRazorpayBookingSuccess();
+    }
   };
 
   // Tip update when predicted price changes
@@ -345,16 +366,68 @@ export default function UserDashboard() {
     socketRef.current = s;
 
     const token = localStorage.getItem("token");
-    if (token) {
-      const decoded = decodeJwt(token);
-      if (decoded) setUser(decoded);
+    if (!token) {
+      // No token, redirect to login after a short delay
+      const redirectTimer = setTimeout(() => {
+        window.location.replace("/login");
+      }, 500);
+      return () => clearTimeout(redirectTimer);
     }
 
-    loadServices();
-    loadBookings();
-    loadUserReviews();
-    loadPaymentMethods();
+    const decoded = decodeJwt(token);
+    if (!decoded) {
+      // Invalid token, redirect to login
+      localStorage.removeItem("token");
+      localStorage.removeItem("refreshToken");
+      const redirectTimer = setTimeout(() => {
+        window.location.replace("/login");
+      }, 500);
+      return () => clearTimeout(redirectTimer);
+    }
+
+    setUser(decoded);
+
+    // Only load data if token is valid
+    loadServices().catch((err) => {
+      if (err.response?.status === 401) {
+        localStorage.removeItem("token");
+        window.location.replace("/login");
+      }
+      console.error("Error loading services:", err);
+    });
+
+    loadBookings().catch((err) => {
+      if (err.response?.status === 401) {
+        localStorage.removeItem("token");
+        window.location.replace("/login");
+      }
+      console.error("Error loading bookings:", err);
+    });
+
+    loadUserReviews().catch((err) => {
+      if (err.response?.status === 401) {
+        localStorage.removeItem("token");
+        window.location.replace("/login");
+      }
+      console.error("Error loading reviews:", err);
+    });
+
+    loadPaymentMethods().catch((err) => {
+      if (err.response?.status === 401) {
+        localStorage.removeItem("token");
+        window.location.replace("/login");
+      }
+      console.error("Error loading payment methods:", err);
+    });
+
     loadSavedAddresses();
+    loadCart().catch((err) => {
+      if (err.response?.status === 401) {
+        localStorage.removeItem("token");
+        window.location.replace("/login");
+      }
+      console.error("Error loading cart:", err);
+    });
 
     const handleBookingUpdate = () => {
       loadBookings();
@@ -381,12 +454,21 @@ export default function UserDashboard() {
       loadBookings();
       loadUserReviews();
     };
+    const handleWalletUpdated = (data) => {
+      // Refresh wallet balance and history when wallet is updated
+      if (data?.newBalance !== undefined) {
+        setWalletBalance(data.newBalance);
+      }
+      fetchWallet();
+      addToast("Wallet updated successfully!", "success");
+    };
 
     s.on("booking-update", handleBookingUpdate);
     s.on("providerLocationUpdate", handleProviderLocationUpdate);
     s.on("payment-config-updated", handlePaymentConfigUpdated);
     s.on("payment-reviewed", handlePaymentReviewed);
     s.on("booking-completed", handleBookingCompleted);
+    s.on("walletUpdated", handleWalletUpdated);
 
     // Cleanup
     return () => {
@@ -395,6 +477,7 @@ export default function UserDashboard() {
       s.off("payment-config-updated", handlePaymentConfigUpdated);
       s.off("payment-reviewed", handlePaymentReviewed);
       s.off("booking-completed", handleBookingCompleted);
+      s.off("walletUpdated", handleWalletUpdated);
     };
   }, []);
 
@@ -868,16 +951,27 @@ export default function UserDashboard() {
             <button
               className="btn btn-secondary close-payment-btn"
               style={{ position: 'absolute', top: 16, right: 16, zIndex: 10 }}
-              onClick={() => setShowPayment(false)}
+              onClick={() => {
+                setShowPayment(false);
+                setCurrentPaymentType("booking");
+              }}
             >
               ✕ Close
             </button>
             <PaymentPage
-              onSuccess={handleRazorpayBookingSuccess}
-              onCancel={() => setShowPayment(false)}
-              amount={Number(predictedPrice || selectedService?.basePrice || 0) + Number(bookingTip || 0)}
+              onSuccess={handlePaymentSuccess}
+              onCancel={() => {
+                setShowPayment(false);
+                setCurrentPaymentType("booking");
+              }}
+              amount={
+                currentPaymentType === "wallet"
+                  ? walletAmount
+                  : Number(predictedPrice || selectedService?.basePrice || 0) + Number(bookingTip || 0)
+              }
               bookingId={selectedService?._id}
               user={user}
+              paymentType={currentPaymentType}
             />
 
             {paymentLoading && (
@@ -954,87 +1048,130 @@ export default function UserDashboard() {
         </div>
       )}
 
-      {/* Wallet top-up (kept minimal for stability; original corrupted UI had JSX blocks at wrong scope) */}
-      {showWalletTopup && (
+      {/* Wallet top-up modal - Simple Razorpay flow */}
+      {showWalletTopup && !showPayment && (
         <div className="payment-modal">
           <div className="payment-content modern-payment">
-            <h3>Wallet Top-up</h3>
+            <button
+              className="btn btn-secondary close-payment-btn"
+              style={{ position: 'absolute', top: 16, right: 16, zIndex: 10 }}
+              onClick={() => {
+                setShowWalletTopup(false);
+                setWalletAmount(0);
+                setWalletError("");
+              }}
+            >
+              ✕ Close
+            </button>
 
-            <div className="wallet-balance-card">
-              <span>Current Balance</span>
-              <strong>₹{walletBalance}</strong>
-            </div>
+            <h3 style={{ marginBottom: '8px', color: '#111', fontSize: '22px', fontWeight: '700' }}>💳 Add Money</h3>
+            <p style={{ fontSize: '14px', color: '#666', marginBottom: '20px' }}>Current Balance: <strong style={{ color: '#22c55e', fontSize: '16px' }}>₹{walletBalance || 0}</strong></p>
 
-            <div className="wallet-topup-inputs">
-              <div className="predefined-chips">
-                {[100, 200, 500, 1000].map((amt) => (
-                  <button
-                    key={amt}
-                    className={walletAmount === amt ? "chip active" : "chip"}
-                    onClick={() => setWalletAmount(amt)}
-                  >
-                    +₹{amt}
-                  </button>
-                ))}
-              </div>
-
+            {/* Amount Input */}
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: '600', marginBottom: '8px', color: '#111' }}>Enter Amount (₹)</label>
               <input
                 type="number"
-                min={1}
-                className="form-input"
-                placeholder="Enter amount"
+                min="1"
+                max="100000"
+                placeholder="Enter amount (min ₹1, max ₹1,00,000)"
                 value={walletAmount}
-                onChange={(e) => setWalletAmount(Number(e.target.value))}
-                style={{ marginTop: 12, width: "100%" }}
+                onChange={(e) => {
+                  setWalletAmount(Number(e.target.value));
+                  setWalletError("");
+                }}
+                disabled={paymentLoading}
+                style={{
+                  width: '100%',
+                  padding: '14px',
+                  borderRadius: '8px',
+                  border: walletError ? '2px solid #dc2626' : '1px solid #ddd',
+                  fontSize: '16px',
+                  fontWeight: '500',
+                  outline: 'none',
+                  transition: 'border 0.2s',
+                  opacity: paymentLoading ? 0.6 : 1
+                }}
               />
             </div>
 
-            {walletError && <div style={{ color: "red", margin: "10px 0" }}>{walletError}</div>}
+            {/* Error Message */}
+            {walletError && (
+              <div style={{
+                color: '#dc2626',
+                padding: '12px',
+                backgroundColor: '#fee2e2',
+                borderRadius: '6px',
+                border: '1px solid #fca5a5',
+                fontSize: '13px',
+                marginBottom: '16px',
+                fontWeight: '500'
+              }}>
+                ⚠️ {walletError}
+              </div>
+            )}
 
-            <div className="payment-buttons">
+            {/* Action Buttons */}
+            <div style={{ display: 'flex', gap: '12px' }}>
               <button
-                className="pay-btn"
                 onClick={() => {
-                  addToast("Wallet top-up is temporarily disabled for stability.", "info");
+                  // Validate amount
+                  if (!walletAmount || walletAmount < 1) {
+                    setWalletError("Enter at least ₹1");
+                    return;
+                  }
+                  if (walletAmount > 100000) {
+                    setWalletError("Maximum ₹1,00,000 allowed");
+                    return;
+                  }
+                  
+                  // Start payment flow
+                  setWalletError("");
+                  setCurrentPaymentType("wallet");
+                  setShowWalletTopup(false);
+                  setShowPayment(true);
                 }}
-                disabled={walletLoading || !walletAmount || walletAmount < 1}
+                disabled={paymentLoading || !walletAmount || walletAmount < 1 || walletAmount > 100000}
+                style={{
+                  flex: 1,
+                  padding: '14px 20px',
+                  backgroundColor: (walletAmount && walletAmount >= 1 && walletAmount <= 100000 && !paymentLoading) ? '#22c55e' : '#ccc',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '8px',
+                  cursor: (walletAmount && walletAmount >= 1 && walletAmount <= 100000 && !paymentLoading) ? 'pointer' : 'not-allowed',
+                  fontSize: '16px',
+                  fontWeight: '700',
+                  transition: 'all 0.2s',
+                  opacity: paymentLoading ? 0.7 : 1
+                }}
               >
-                {walletLoading ? "Processing..." : "Add Money"}
+                {paymentLoading ? '⏳ Processing...' : '💳 Add Money'}
               </button>
 
-              <button className="close-btn" onClick={() => setShowWalletTopup(false)}>
+              <button
+                onClick={() => {
+                  setShowWalletTopup(false);
+                  setWalletAmount(0);
+                  setWalletError("");
+                }}
+                disabled={paymentLoading}
+                style={{
+                  flex: 1,
+                  padding: '14px 20px',
+                  backgroundColor: '#f3f4f6',
+                  color: '#111',
+                  border: '1px solid #ddd',
+                  borderRadius: '8px',
+                  cursor: paymentLoading ? 'not-allowed' : 'pointer',
+                  fontSize: '16px',
+                  fontWeight: '600',
+                  transition: 'all 0.2s',
+                  opacity: paymentLoading ? 0.6 : 1
+                }}
+              >
                 Close
               </button>
-            </div>
-
-            <div className="wallet-history-section">
-              <h4>Wallet Transactions</h4>
-              {walletLoading ? (
-                <div>Loading...</div>
-              ) : (
-                <table className="wallet-history-table">
-                  <thead>
-                    <tr>
-                      <th>Amount</th>
-                      <th>Status</th>
-                      <th>Method</th>
-                      <th>Date</th>
-                      <th>Payment ID</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {walletHistory.map((txn, idx) => (
-                      <tr key={idx}>
-                        <td>₹{txn.amount}</td>
-                        <td>{txn.status}</td>
-                        <td>{txn.paymentMethod || "-"}</td>
-                        <td>{txn.createdAt ? new Date(txn.createdAt).toLocaleString() : "-"}</td>
-                        <td>{txn.razorpay_payment_id || "-"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
             </div>
           </div>
         </div>

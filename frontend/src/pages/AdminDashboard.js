@@ -17,7 +17,7 @@ export default function AdminDashboard() {
   const [pendingPayments, setPendingPayments] = useState([]);
   const [qrFile, setQrFile] = useState(null);
   const [qrReplaceFiles, setQrReplaceFiles] = useState({});
-  const [newService, setNewService] = useState({ name: "", category: "", rating: 0 });
+  const [newService, setNewService] = useState({ name: "", category: "" });
   const [activeTab, setActiveTab] = useState("services");
 
   useEffect(() => {
@@ -201,9 +201,7 @@ export default function AdminDashboard() {
       name: newService.name.trim(),
       category: newService.category.trim()
     };
-    if (Number.isFinite(newService.rating) && newService.rating >= 0 && newService.rating <= 5) {
-      payload.rating = Number(newService.rating);
-    }
+
 
     if (!payload.name || !payload.category) {
       addToast("Name and category are required", "error");
@@ -213,7 +211,7 @@ export default function AdminDashboard() {
     try {
       await api.post("/services", payload);
       addToast("Service added successfully!", "success");
-      setNewService({ name: "", category: "", rating: 0 });
+      setNewService({ name: "", category: "" });
       loadData();
     } catch (err) {
       console.error("Add service failed:", err);
@@ -456,18 +454,7 @@ export default function AdminDashboard() {
                       className="form-input"
                     />
                   </div>
-                  <div className="form-group">
-                    <input
-                      type="number"
-                      placeholder="Rating"
-                      value={newService.rating || ""}
-                      onChange={(e) => setNewService({ ...newService, rating: parseFloat(e.target.value) })}
-                      step="0.1"
-                      min="0"
-                      max="5"
-                      className="form-input"
-                    />
-                  </div>
+
                   <button type="submit" className="btn btn-primary">
                     Add Service
                   </button>
@@ -484,7 +471,7 @@ export default function AdminDashboard() {
                     <tr>
                       <th>Name</th>
                       <th>Category</th>
-                      <th>Rating</th>
+
                       <th>Action</th>
                     </tr>
                   </thead>
@@ -494,7 +481,7 @@ export default function AdminDashboard() {
                         <td>{service.name}</td>
                         <td>{service.category}</td>
                         <td>
-                          <span className="rating-star">⭐</span> {service.rating}
+
                         </td>
                         <td>
                           <button
