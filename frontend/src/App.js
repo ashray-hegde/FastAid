@@ -18,13 +18,15 @@ import { CartProvider } from "./context/CartContext";
 import { ToastProvider } from "./context/ToastContext";
 import ToastContainer from "./components/ToastContainer";
 
-export default function App() {
+function App() {
   if (process.env.NODE_ENV !== "production") console.log("App rerender");
   const [role, setRole] = useState("");
+  const [authLoading, setAuthLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (process.env.NODE_ENV !== "production") console.log("App useEffect: token/socket/role setup");
+    if (process.env.NODE_ENV !== "production") console.log("[App] Startup useEffect: token/socket/role setup");
+    setAuthLoading(true);
     const token = localStorage.getItem("token");
     const socket = getSocket();
     if (process.env.NODE_ENV !== "production") {
@@ -32,15 +34,17 @@ export default function App() {
       socket.on("disconnect", (reason) => console.log("[App] Socket disconnected", reason));
     }
 
-    // If no token, leave socket to manage connection; it will reconnect when token appears
     if (!token) {
+      if (process.env.NODE_ENV !== "production") console.log("[App] No token found at startup");
+      setRole("");
+      setAuthLoading(false);
       return;
     }
     try {
       const decoded = decodeJwt(token);
       if (!decoded?.role) throw new Error("Invalid token payload");
       setRole(decoded.role);
-      
+      if (process.env.NODE_ENV !== "production") console.log(`[App] Token found, role set to ${decoded.role}`);
       // Connect socket and register only when we have a token
       socket.connect();
       socket.emit("register", { token });
@@ -57,8 +61,11 @@ export default function App() {
         }
       }
     } catch (err) {
+      if (process.env.NODE_ENV !== "production") console.log("[App] Invalid token, clearing");
       localStorage.removeItem("token");
-      // do not forcefully disconnect here; allow socket to retry connections
+      setRole("");
+    } finally {
+      setAuthLoading(false);
     }
   }, []);
 
@@ -87,6 +94,16 @@ export default function App() {
     if (process.env.NODE_ENV !== "production") console.log("[App] Socket disconnected on logout");
     navigate("/login");
   };
+
+  if (authLoading) {
+    if (process.env.NODE_ENV !== "production") console.log("[App] Waiting for auth to finish loading...");
+    return (
+      <div style={{ padding: 40, textAlign: "center" }}>
+        <h2>Loading...</h2>
+        <p>Initializing authentication...</p>
+      </div>
+    );
+  }
 
   return (
     <ToastProvider>
@@ -140,3 +157,5 @@ export default function App() {
     </ToastProvider>
   );
 }
+
+export default App;

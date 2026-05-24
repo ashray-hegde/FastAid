@@ -1,8 +1,7 @@
 import { useState } from "react";
 import api from "../api";
 
-export default function Payment({ onSuccess, scannerImageSrc, amount = 0, bookingId, user }) {
-  const qrSrc = scannerImageSrc || "/scanner/scanner.jpeg";
+export default function Payment({ onSuccess, onCancel, amount = 0, bookingId, user }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -93,25 +92,8 @@ export default function Payment({ onSuccess, scannerImageSrc, amount = 0, bookin
     <div className="payment-container">
       <h3 style={{ marginBottom: '20px' }}>💳 Payment</h3>
 
-      <div className="payment-qr">
-        <img
-          src={qrSrc}
-          alt="QR Code"
-          style={{
-            width: '180px',
-            height: '180px',
-            objectFit: 'contain',
-            borderRadius: '10px'
-          }}
-        />
-      </div>
-
       <p style={{ margin: '20px 0', fontSize: '16px', color: '#374151' }}>
-        <strong>UPI/Card/Netbanking</strong>
-      </p>
-
-      <p style={{ margin: '10px 0', fontSize: '14px', color: '#6B7280' }}>
-        Pay securely using Razorpay
+        Pay securely using Razorpay. Click below to pay for your booking.
       </p>
 
       {error && <div style={{ color: 'red', margin: '10px 0' }}>{error}</div>}
@@ -124,6 +106,16 @@ export default function Payment({ onSuccess, scannerImageSrc, amount = 0, bookin
         disabled={loading}
       >
         {loading ? 'Processing...' : 'Pay Now'}
+      </button>
+
+      {/* Cancel Payment button below Pay Now, styled the same */}
+      <button
+        onClick={onCancel}
+        className="btn btn-success"
+        style={{ width: '100%', marginTop: '12px', backgroundColor: '#22c55e', borderColor: '#22c55e' }}
+        disabled={loading}
+      >
+        Cancel Payment
       </button>
     </div>
   );
